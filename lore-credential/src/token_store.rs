@@ -209,8 +209,7 @@ pub async fn load_all_identities(
     let identity_entries = {
         let token_map = token_map();
         let mut store = token_map.lock().await;
-        if store.is_none()
-            && let Ok(guard) = lock_token_map().await
+        if let Ok(guard) = lock_token_map().await
             && let Ok(loaded_map) = load_token_map(&guard)
         {
             store.replace(loaded_map);
@@ -258,6 +257,7 @@ pub async fn load_all_identities(
 
 /// Clear token map and token store file.
 pub async fn reset_tokens() -> Result<(), TokenStoreError> {
+    let _refresh_guard = lock_refresh().await?;
     let token_map = token_map();
     let mut store = token_map.lock().await;
     let guard = lock_token_map().await?;
@@ -293,8 +293,12 @@ async fn lock_store_file(path: &Path) -> Result<FSLock, TokenStoreError> {
     })
 }
 
-/// Cross-process guard for `tokenstore.toml`, creating the store directory so
-/// the lock sidecar can be placed next to the file.
+/// Serializes credential refresh across processes sharing the token store.
+pub async fn lock_refresh() -> Result<FSLock, TokenStoreError> {
+    lock_store_file(&base_path(true)?.join("refresh")).await
+}
+
+/// Cross-process guard for `tokenstore.toml`.
 async fn lock_token_map() -> Result<FSLock, TokenStoreError> {
     lock_store_file(token_map_path(true)?.as_path()).await
 }
@@ -357,28 +361,20 @@ fn store_token_map(_guard: &FSLock, token_map: &TokenMap) -> Result<(), TokenSto
         TokenStoreError::internal_with_context(e, "Failed to store token map")
     })?;
 
-    let mut options = store_open_options();
-    options.create(true).write(true);
-    let mut config_file = match options.open(path.as_path()) {
-        Ok(file) => file,
-        Err(err) => {
-            lore_debug!("Failed to store token map file: {err}");
-            return Err(TokenStoreError::internal_with_context(
-                err,
-                "Failed to store token map",
-            ));
-        }
-    };
-
-    // Truncate only after the write guard is held, so a concurrent reader
-    // can never observe a partially written file.
-    config_file
-        .set_len(0)
-        .and_then(|()| config_file.write_all(config_string.as_bytes()))
-        .map_err(|e| {
-            lore_warn!("Failed to store token map: {e}");
-            TokenStoreError::internal_with_context(e, "Failed to store token map")
-        })
+    let staging = path.with_extension("toml.tmp");
+    let result = (|| -> std::io::Result<()> {
+        let mut options = store_open_options();
+        options.create(true).write(true).truncate(true);
+        let mut file = options.open(&staging)?;
+        file.write_all(config_string.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&staging, &path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&staging);
+    }
+    result.map_err(|e| TokenStoreError::internal_with_context(e, "Failed to store token map"))
 }
 
 fn use_secure_store() -> bool {
@@ -448,8 +444,46 @@ pub async fn store_user_token(
     auth_endpoint: &str,
     identity: &str,
     token: &str,
+    acceptable_root_domains: Vec<String>,
+) -> Result<(), TokenStoreError> {
+    store_credentials(
+        auth_endpoint,
+        identity,
+        token,
+        None,
+        acceptable_root_domains,
+    )
+    .await
+}
+
+pub async fn store_user_credentials(
+    auth_endpoint: &str,
+    identity: &str,
+    token: &str,
+    refresh_token: Option<&str>,
+    acceptable_root_domains: Vec<String>,
+) -> Result<(), TokenStoreError> {
+    store_credentials(
+        auth_endpoint,
+        identity,
+        token,
+        Some(refresh_token),
+        acceptable_root_domains,
+    )
+    .await
+}
+
+async fn store_credentials(
+    auth_endpoint: &str,
+    identity: &str,
+    token: &str,
+    refresh_token: Option<Option<&str>>,
     mut acceptable_root_domains: Vec<String>,
 ) -> Result<(), TokenStoreError> {
+    let encrypted_refresh = match refresh_token.flatten() {
+        Some(refresh) => Some(encrypt_token(refresh).await?),
+        None => None,
+    };
     let auth_endpoint = auth_endpoint.trim_end_matches('/');
 
     // If we got the token from this endpoint it stands to reason we can
@@ -469,7 +503,7 @@ pub async fn store_user_token(
         user_id: identity.to_string(),
         token: encrypted_token,
         acceptable_root_domains,
-        refresh_token: None,
+        refresh_token: encrypted_refresh,
     };
 
     let token_map = token_map();
@@ -490,7 +524,9 @@ pub async fn store_user_token(
                 // Preserve existing refresh token when updating the auth token
                 let existing_refresh = remote.token[existing_index].refresh_token.take();
                 let mut new_token = identity_token;
-                new_token.refresh_token = existing_refresh;
+                if refresh_token.is_none() {
+                    new_token.refresh_token = existing_refresh;
+                }
                 remote.token[existing_index] = new_token;
                 lore_trace!(
                     "Replace user {identity} token for auth_endpoint {auth_endpoint} in existing entry"
@@ -558,8 +594,7 @@ where
     let encrypted_token = {
         let token_map = token_map();
         let mut store = token_map.lock().await;
-        if store.is_none()
-            && let Ok(guard) = lock_token_map().await
+        if let Ok(guard) = lock_token_map().await
             && let Ok(loaded_map) = load_token_map(&guard)
         {
             store.replace(loaded_map);
@@ -649,6 +684,7 @@ pub async fn remove_user_tokens_for_auth_url(
     auth_url: &str,
     identity: &str,
 ) -> Result<(), TokenStoreError> {
+    let _refresh_guard = lock_refresh().await?;
     let auth_url = auth_url.trim_end_matches('/');
 
     let token_map = token_map();
@@ -704,6 +740,7 @@ pub async fn remove_user_tokens_for_auth_url(
 /// Removes all identities from both the base `auth_url` entry and all
 /// resource-scoped entries (both new and legacy key formats).
 pub async fn remove_all_tokens_for_auth_url(auth_url: &str) -> Result<(), TokenStoreError> {
+    let _refresh_guard = lock_refresh().await?;
     let auth_url = auth_url.trim_end_matches('/');
 
     let token_map = token_map();
@@ -733,6 +770,7 @@ pub async fn remove_all_tokens_for_auth_url(auth_url: &str) -> Result<(), TokenS
 }
 
 pub async fn remove_user_token(endpoint: &str, identity: &str) -> Result<(), TokenStoreError> {
+    let _refresh_guard = lock_refresh().await?;
     lore_trace!("Remove user {identity} token for auth_endpoint {endpoint}");
 
     let token_map = token_map();
@@ -867,8 +905,7 @@ pub async fn load_refresh_token(
     let encrypted_refresh = {
         let token_map = token_map();
         let mut store = token_map.lock().await;
-        if store.is_none()
-            && let Ok(guard) = lock_token_map().await
+        if let Ok(guard) = lock_token_map().await
             && let Ok(loaded_map) = load_token_map(&guard)
         {
             store.replace(loaded_map);
