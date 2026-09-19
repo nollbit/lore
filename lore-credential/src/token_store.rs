@@ -258,6 +258,10 @@ pub async fn load_all_identities(
 /// Clear token map and token store file.
 pub async fn reset_tokens() -> Result<(), TokenStoreError> {
     let _refresh_guard = lock_refresh().await?;
+    reset_tokens_unlocked().await
+}
+
+async fn reset_tokens_unlocked() -> Result<(), TokenStoreError> {
     let token_map = token_map();
     let mut store = token_map.lock().await;
     let guard = lock_token_map().await?;
@@ -1035,7 +1039,7 @@ async fn load_or_init_encryption_key() -> Result<Vec<u8>, TokenStoreError> {
     );
 
     let key = generate_encryption_key()?;
-    reset_tokens().await?;
+    reset_tokens_unlocked().await?;
     set_secret_in_store(ENCRYPTION_KEY_TARGET, key.clone()).await?;
 
     Ok(key)

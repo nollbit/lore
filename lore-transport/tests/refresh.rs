@@ -107,6 +107,7 @@ async fn refresh_worker() {
         return;
     };
     if mode == "seed" {
+        let _guard = token_store::lock_refresh().await.unwrap();
         token_store::store_user_credentials(
             URL,
             "alice",
