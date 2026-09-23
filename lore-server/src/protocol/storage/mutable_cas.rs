@@ -64,6 +64,8 @@ pub async fn handle_mutable_cas(
     user_id: String,
     mutable_store: Arc<dyn MutableStore>,
 ) -> Result<LoreResponse, MessageHandleError> {
+    crate::branch_guard::check_repository_mutation(repository)
+        .map_err(|e| MessageHandleError::AuthorizationFailure(e.message().to_string()))?;
     let execution = setup_execution(module_path!(), correlation_id, user_id);
 
     debug!(

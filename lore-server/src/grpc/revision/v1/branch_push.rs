@@ -88,6 +88,14 @@ pub async fn handler(
     let revision = Hash::from(req.revision_signature);
     let force = req.force;
     let fast_forward_merge = req.fast_forward_merge;
+    crate::branch_guard::check_push(
+        repository_id,
+        branch_id,
+        revision,
+        &user_id,
+        force,
+        fast_forward_merge,
+    )?;
 
     if revision.is_zero() {
         info!("Invalid branch push request, revision_signature is zero");

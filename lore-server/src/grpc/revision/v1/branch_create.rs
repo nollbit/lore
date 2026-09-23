@@ -129,6 +129,7 @@ pub async fn branch_create_implementation(
     let stack: Vec<BranchPoint> = req.stack.into_iter().map(BranchPoint::from).collect();
 
     let branch = BranchId::from(req.id);
+    crate::branch_guard::check_branch(context.repository_id, branch, Some(name.as_str()))?;
 
     let created = util::time::timestamp();
 

@@ -101,6 +101,7 @@ pub async fn branch_delete_implementation(
     let user_id = caller_context.user_id;
     let correlation_id = caller_context.correlation_id;
     let branch_id = BranchId::from(req.id);
+    crate::branch_guard::check_branch(repository_id, branch_id, None)?;
 
     let execution = setup_execution(module_path!(), correlation_id.clone(), user_id.clone());
     let repository = Arc::new(RepositoryContext::new_server_context(

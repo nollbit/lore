@@ -59,6 +59,7 @@ pub async fn handler(
     }
 
     let repository = get_repository(request.metadata())?;
+    crate::branch_guard::check_repository_mutation(repository)?;
     let extensions = request.extensions().clone();
     let user_id = get_user_id(&extensions);
     let correlation_id = extract_correlation_id(&request).unwrap_or_default();

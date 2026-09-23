@@ -100,6 +100,7 @@ pub async fn handler(
     let (_, extensions, req) = request.into_parts();
 
     let repository_id: Context = req.repository_id.into();
+    crate::branch_guard::check_repository_mutation(repository_id.into())?;
     if repository_id == Context::default() {
         return Err(Status::invalid_argument("Missing repository ID"));
     }

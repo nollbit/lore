@@ -42,6 +42,7 @@ pub async fn handler(
     let correlation_id = extract_correlation_id(&request).unwrap_or_default();
     let req = request.into_inner();
     let branch = BranchId::from(req.branch);
+    crate::branch_guard::check_branch(repository_id, branch, None)?;
 
     debug!({BRANCH_ID} = %branch, "Handling branch delete");
 

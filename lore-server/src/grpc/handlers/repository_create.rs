@@ -58,6 +58,7 @@ pub async fn handler(
     let req = request.into_inner();
 
     let id: RepositoryId = Context::from(req.id).into();
+    crate::branch_guard::check_repository_mutation(id)?;
 
     let execution = setup_execution(module_path!(), correlation_id.clone(), user_id.clone());
 

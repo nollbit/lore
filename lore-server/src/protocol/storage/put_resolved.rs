@@ -107,6 +107,8 @@ pub async fn handle_put_resolved(
     mutable_store: Arc<dyn MutableStore>,
     immutable_store: Arc<dyn ImmutableStore>,
 ) -> Result<LoreResponse, MessageHandleError> {
+    crate::branch_guard::check_repository_mutation(repository)
+        .map_err(|e| MessageHandleError::AuthorizationFailure(e.message().to_string()))?;
     if let Some(put) = put {
         handle_put(
             put,

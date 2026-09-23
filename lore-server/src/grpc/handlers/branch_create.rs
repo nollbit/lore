@@ -72,6 +72,7 @@ pub async fn handler(
     let req = request.into_inner();
 
     let branch = BranchId::from(req.branch);
+    crate::branch_guard::check_branch(repository_id, branch, Some(req.name.as_str()))?;
     let category = req.category;
     let name = req.name;
     let creator = req.creator;

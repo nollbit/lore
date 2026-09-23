@@ -275,3 +275,29 @@ lore-server/
 ├── config/                # Default configuration files
 └── build.rs               # Code generation
 ```
+
+## Server-owned branch guards
+
+`LORE_BRANCH_GUARDS` accepts a JSON array of repository IDs, branch IDs and
+reserved branch names. IDs use 32 lowercase hexadecimal characters:
+
+```json
+[{"repository":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","branch":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","name":"main"}]
+```
+
+A guarded branch accepts only an ordinary push whose authenticated subject is
+`landing:<repository-id>:<branch-name>:<revision-hash>`, matching the requested
+revision exactly. The identity issuer must reserve this subject namespace and
+issue such credentials only after the caller satisfies its landing policy.
+Force and automatic-merge pushes are rejected even for landing identities.
+
+Guards reject protected branch creation, deletion and metadata updates. They
+also reject repository creation, deletion, metadata changes, obliteration and
+raw mutable-storage mutations in a guarded repository, including resolved-key
+writes. Read APIs and ordinary revision-service operations on other branches
+remain available. Keep object-cache repositories separate from guarded source
+repositories.
+
+The environment is read once per server process. Malformed configuration denies
+guarded mutation entry points rather than falling back to unrestricted access.
+Removing a guard requires changing the server configuration and restarting it.

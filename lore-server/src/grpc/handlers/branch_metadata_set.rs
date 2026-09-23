@@ -100,6 +100,7 @@ pub async fn handler(
     let req = request.into_inner();
 
     let branch_id = BranchId::from(req.branch_id);
+    crate::branch_guard::check_branch(repository_id, branch_id, None)?;
     if branch_id == BranchId::default() {
         return Err(Status::invalid_argument("Missing branch ID"));
     }

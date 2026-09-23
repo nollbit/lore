@@ -62,6 +62,7 @@ pub async fn handler(
     let execution = setup_execution(module_path!(), correlation_id, user_id);
 
     let id: RepositoryId = Context::from(req.id).into();
+    crate::branch_guard::check_repository_mutation(id)?;
     let repository = Arc::new(RepositoryContext::new_server_context(
         immutable_store,
         mutable_store,

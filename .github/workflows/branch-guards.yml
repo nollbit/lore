@@ -1,0 +1,25 @@
+name: Branch guard validation
+on:
+  push:
+    branches: [server-branch-protection]
+permissions:
+  contents: read
+jobs:
+  server:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libssl-dev pkg-config clang cmake
+      - name: Install Rust
+        run: rustup toolchain install 1.98.1 --profile minimal && rustup override set 1.98.1
+      - name: Test branch guards
+        run: cargo test --locked -p lore-server branch_guard --lib
+      - name: Build server
+        run: cargo build --locked --release -p lore-server --bin loreserver
+      - uses: actions/upload-artifact@v4
+        with:
+          name: loreserver-linux-arm64
+          path: target/release/loreserver
+          retention-days: 7

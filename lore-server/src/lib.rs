@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 pub mod auth;
 pub mod authnz;
+pub mod branch_guard;
 pub mod cache;
 pub mod execution_state;
 pub mod grpc;
