@@ -121,7 +121,7 @@ pub async fn handler(
                 .check_repository_access(
                     get_verified_token(&extensions).as_ref(),
                     repository_id.into(),
-                    None,
+                    Some("admin"),
                 )
                 .await
                 .map_err(|_err| no_repository_access_status())?;
@@ -225,10 +225,10 @@ mod tests {
         }
     }
 
-    /// Permits, recording that the handler asked with `action: None`.
+    /// Permits, recording that the handler asked with `action: Some("admin")`.
     #[derive(Default)]
     struct RecordingPermitAuthorizer {
-        called_with_action_none: std::sync::atomic::AtomicBool,
+        called_with_admin_action: std::sync::atomic::AtomicBool,
     }
 
     #[async_trait::async_trait]
@@ -239,8 +239,8 @@ mod tests {
             _repository_id: RepositoryId,
             action: Option<&str>,
         ) -> Result<(), Status> {
-            self.called_with_action_none
-                .store(action.is_none(), std::sync::atomic::Ordering::SeqCst);
+            self.called_with_admin_action
+                .store(action == Some("admin"), std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
     }
@@ -325,7 +325,7 @@ mod tests {
                     .unwrap();
                 assert!(
                     authorizer
-                        .called_with_action_none
+                        .called_with_admin_action
                         .load(std::sync::atomic::Ordering::SeqCst)
                 );
             })
