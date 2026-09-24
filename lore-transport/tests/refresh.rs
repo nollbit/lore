@@ -79,26 +79,7 @@ impl Authentication for Provider {
     ) -> Result<AuthorizationToken, ProtocolError> {
         unreachable!()
     }
-    async fn get_user_info(
-        &self,
-        _auth_url: &str,
-        _authz_token: &str,
-        _repository: RepositoryId,
-        _user_ids: &[String],
-        _correlation_id: &str,
-    ) -> Result<Vec<ResolvedUser>, ProtocolError> {
-        unreachable!()
-    }
-    async fn get_user_id(
-        &self,
-        _auth_url: &str,
-        _authz_token: &str,
-        _repository: RepositoryId,
-        _display_name: &str,
-        _correlation_id: &str,
-    ) -> Result<Option<ResolvedUser>, ProtocolError> {
-        unreachable!()
-    }
+
 }
 
 #[tokio::test]
