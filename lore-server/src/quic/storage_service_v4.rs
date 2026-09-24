@@ -364,8 +364,7 @@ impl QuicService for StorageServiceV4 {
                         // vouch for it. A source this session's token already
                         // cleared is remembered, so a repeated copy from it
                         // skips the check.
-                        if !authorized_sources.contains(&copy.source_repository)
-                        {
+                        if !authorized_sources.contains(&copy.source_repository) {
                             let verified = token.as_deref().map(VerifiedTokenOwned::as_token);
                             self.repository_authorizer
                                 .check_repository_access(

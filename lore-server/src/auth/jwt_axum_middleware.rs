@@ -240,7 +240,7 @@ mod tests {
 
                 let granted = vec![ResourcePermission {
                     resource_id: format!("urc-{repository}"),
-                    permission: vec![],
+                    permission: vec!["read".into()],
                 }];
                 let response = server
                     .get(&url)
@@ -250,7 +250,7 @@ mod tests {
 
                 let elsewhere = vec![ResourcePermission {
                     resource_id: "urc-00000000000000000000000000000000".to_string(),
-                    permission: vec![],
+                    permission: vec!["read".into()],
                 }];
                 let response = server
                     .get(&url)

@@ -373,7 +373,7 @@ async fn connect_impl(
             // the caller authorizes with what they supplied, and the services
             // that need an authentication token fail where they use it rather
             // than failing the whole connection here.
-            lore_credential::token_store::load_user_token(
+            crate::auth::exchange::load_authentication_token(
                 &auth_url,
                 &identity,
                 lore_credential::token_store::tokens_only_for_recipient_domain(
@@ -388,7 +388,7 @@ async fn connect_impl(
                 // logged-out state (login saves the identity to the repo
                 // config; logout removes only the tokens) — report it as
                 // NotAuthenticated rather than an internal failure.
-                if err.is_token_not_found() {
+                if err.is_not_authenticated() {
                     lore_debug!("No token stored for identity {identity} at {auth_url}");
                     ProtocolError::from(lore_base::error::NotAuthenticated)
                 } else {

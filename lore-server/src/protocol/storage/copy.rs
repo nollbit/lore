@@ -229,7 +229,7 @@ mod tests {
         context.insert(AuthorizationToken {
             resources: Some(vec![ResourcePermission {
                 resource_id: resource_id.to_string(),
-                permission: vec![],
+                permission: vec!["read".into()],
             }]),
             ..Default::default()
         });

@@ -941,7 +941,11 @@ mod tests {
                 _repository_id: RepositoryId,
                 action: Option<&str>,
             ) -> Result<(), Status> {
-                if action == Some("read") { Ok(()) } else { Err(Status::permission_denied("denied")) }
+                if action == Some("read") {
+                    Ok(())
+                } else {
+                    Err(Status::permission_denied("denied"))
+                }
             }
         }
 
@@ -949,32 +953,79 @@ mod tests {
         async fn policy_actions_and_expiry_are_enforced() {
             let authorizer: Arc<dyn RepositoryAuthorizer> = Arc::new(ReadPolicy);
             let repository = RepositoryId::default();
-            let mut claims = AuthorizationToken { expires: u64::MAX, ..Default::default() };
-            let token = VerifiedToken { raw: "token", claims: &claims };
-            assert!(authorizer.granted_action_access(Some(&token), repository, "read").await.is_ok());
-            assert!(authorizer.granted_action_access(Some(&token), repository, "write").await.is_err());
+            let mut claims = AuthorizationToken {
+                expires: u64::MAX,
+                ..Default::default()
+            };
+            let token = VerifiedToken {
+                raw: "token",
+                claims: &claims,
+            };
+            assert!(
+                authorizer
+                    .granted_action_access(Some(&token), repository, "read")
+                    .await
+                    .is_ok()
+            );
+            assert!(
+                authorizer
+                    .granted_action_access(Some(&token), repository, "write")
+                    .await
+                    .is_err()
+            );
             claims.expires = 1;
-            let token = VerifiedToken { raw: "token", claims: &claims };
-            assert!(authorizer.granted_action_access(Some(&token), repository, "read").await.is_err());
+            let token = VerifiedToken {
+                raw: "token",
+                claims: &claims,
+            };
+            assert!(
+                authorizer
+                    .granted_action_access(Some(&token), repository, "read")
+                    .await
+                    .is_err()
+            );
         }
 
         #[tokio::test]
         async fn enumerated_actions_preserve_repository_scope() {
-            let authorizer: Arc<dyn RepositoryAuthorizer> = Arc::new(AuthClientAuthorizer::new("https://auth.invalid".into()));
+            let authorizer: Arc<dyn RepositoryAuthorizer> =
+                Arc::new(AuthClientAuthorizer::new("https://auth.invalid".into()));
             let repository = RepositoryId::default();
             let mut claims = AuthorizationToken {
                 expires: u64::MAX,
                 resources: Some(vec![crate::auth::jwt::ResourcePermission {
-                    resource_id: format!("urc-{repository}"), permission: vec!["read".into()],
+                    resource_id: format!("urc-{repository}"),
+                    permission: vec!["read".into()],
                 }]),
                 ..Default::default()
             };
-            let token = VerifiedToken { raw: "token", claims: &claims };
-            assert!(authorizer.granted_action_access(Some(&token), repository, "read").await.is_ok());
-            assert!(authorizer.granted_action_access(Some(&token), repository, "write").await.is_err());
+            let token = VerifiedToken {
+                raw: "token",
+                claims: &claims,
+            };
+            assert!(
+                authorizer
+                    .granted_action_access(Some(&token), repository, "read")
+                    .await
+                    .is_ok()
+            );
+            assert!(
+                authorizer
+                    .granted_action_access(Some(&token), repository, "write")
+                    .await
+                    .is_err()
+            );
             claims.resources.as_mut().unwrap()[0].resource_id = "urc-elsewhere".into();
-            let token = VerifiedToken { raw: "token", claims: &claims };
-            assert!(authorizer.granted_action_access(Some(&token), repository, "read").await.is_err());
+            let token = VerifiedToken {
+                raw: "token",
+                claims: &claims,
+            };
+            assert!(
+                authorizer
+                    .granted_action_access(Some(&token), repository, "read")
+                    .await
+                    .is_err()
+            );
         }
     }
 

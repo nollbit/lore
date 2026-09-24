@@ -1,7 +1,7 @@
 name: Branch guard validation
 on:
   push:
-    branches: [server-branch-protection, repository-acl]
+    branches: [server-branch-protection, repository-acl, upstream-integration]
 permissions:
   contents: read
 jobs:
@@ -16,6 +16,8 @@ jobs:
         run: rustup toolchain install 1.98.1 --profile minimal && rustup override set 1.98.1
       - name: Test branch guards
         run: cargo test --locked -p lore-server --lib
+      - name: Test authentication renewal
+        run: cargo test --locked -p lore-transport --test refresh
       - name: Build server
         run: cargo build --locked --release -p lore-server --bin loreserver
       - uses: actions/upload-artifact@v4

@@ -301,3 +301,15 @@ repositories.
 The environment is read once per server process. Malformed configuration denies
 guarded mutation entry points rather than falling back to unrestricted access.
 Removing a guard requires changing the server configuration and restarting it.
+
+### Repository permissions
+
+Authenticated gRPC, HTTP and QUIC operations require action grants for the named
+repository: `read` for reads, `write` for mutations, `admin` for metadata and
+protection settings, and `obliterate` for permanent deletion. Unknown gRPC
+methods require `write`. Copy operations also require `read` on the source
+repository. QUIC commands reject expired session credentials.
+
+The configured repository authorizer supplies these grants; policy-backed
+authorizers may answer individual action checks instead of enumerating grants.
+Server-owned branch guards apply in addition to repository permissions.
