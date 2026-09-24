@@ -312,6 +312,25 @@ pub fn verify_authorization(
     Err(JwtVerifierError::NotAuthorized)
 }
 
+/// Check a repository-scoped action on a verified access token.
+pub fn permits_action(
+    token: &AuthorizationToken,
+    repository: lore_base::types::RepositoryId,
+    action: &str,
+) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    token.expires > now
+        && token.resources.as_ref().is_some_and(|resources| {
+            ResourceMatcher::default()
+                .merged_permissions(resources, repository)
+                .iter()
+                .any(|p| p == action)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -322,6 +341,34 @@ mod tests {
     use lore_revision::lore::RepositoryId;
 
     use super::*;
+
+    #[test]
+    fn action_grants_are_repository_scoped_and_expire() {
+        let repository: RepositoryId = Context::from_str("0194b726b34e72b0b45550b88a967076")
+            .unwrap()
+            .into();
+        let other: RepositoryId = Context::from_str("0192ae48ccf17060bc1ba9d04f6acb2f")
+            .unwrap()
+            .into();
+        let mut token = AuthorizationToken {
+            expires: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 60,
+            resources: Some(vec![ResourcePermission {
+                resource_id: "urc-0194b726b34e72b0b45550b88a967076".into(),
+                permission: vec!["read".into()],
+            }]),
+            ..Default::default()
+        };
+        assert!(permits_action(&token, repository, "read"));
+        assert!(!permits_action(&token, repository, "write"));
+        assert!(!permits_action(&token, repository, "admin"));
+        assert!(!permits_action(&token, other, "read"));
+        token.expires = 1;
+        assert!(!permits_action(&token, repository, "read"));
+    }
 
     #[test]
     fn resource_permission_matches_wildcard_resource() {

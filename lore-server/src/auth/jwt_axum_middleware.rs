@@ -38,7 +38,17 @@ pub async fn jwt_axum_verify_authorization(
                     Context::from_str(params.repository_id.as_str())
                         .unwrap_or_default()
                         .into();
-                if jwt::verify_authorization(&user_info, repository).is_ok() {
+                let action = if matches!(
+                    *request.method(),
+                    axum::http::Method::GET | axum::http::Method::HEAD
+                ) {
+                    "read"
+                } else {
+                    "write"
+                };
+                if jwt::verify_authorization(&user_info, repository).is_ok()
+                    && jwt::permits_action(&user_info, repository, action)
+                {
                     Span::current().record(USER_ID, &user_info.user_id);
                     // Set `user_info` as a request extension so it can be used down the stack
                     request.extensions_mut().insert(RawToken(accesstoken));

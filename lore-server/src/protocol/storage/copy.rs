@@ -142,6 +142,11 @@ impl Message for Copy {
         if let Some(token) = context.get::<AuthorizationToken>() {
             verify_authorization(&token, self.source_repository)
                 .map_err(|err| MessageHandleError::AuthorizationFailure(err.to_string()))?;
+            if !crate::auth::jwt::permits_action(&token, self.source_repository, "read") {
+                return Err(MessageHandleError::AuthorizationFailure(
+                    "Source repository permission required".into(),
+                ));
+            }
         }
 
         let user_id = get_user_id_from_context(&context);

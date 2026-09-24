@@ -489,6 +489,32 @@ impl QuicService for StorageService {
         context: Arc<AttributeMap>,
         request: Self::ParsedRequestType,
     ) -> Result<Vec<Bytes>, Self::RequestHandlerError> {
+        if self.jwt_verifier.is_some()
+            && !matches!(
+                &request,
+                ParsedStorageRequest::Connect(_) | ParsedStorageRequest::Correlate(_)
+            )
+        {
+            let repository = context
+                .get::<RepositoryId>()
+                .ok_or(MessageHandleError::NotConnected)?;
+            let token = context
+                .get::<AuthorizationToken>()
+                .ok_or(MessageHandleError::MissingToken)?;
+            let action = match &request {
+                ParsedStorageRequest::Get(_)
+                | ParsedStorageRequest::GetMetadata(_)
+                | ParsedStorageRequest::Query(_)
+                | ParsedStorageRequest::GetResolved(_)
+                | ParsedStorageRequest::MutableLoad(_) => "read",
+                _ => "write",
+            };
+            if !crate::auth::jwt::permits_action(&token, *repository, action) {
+                return Err(MessageHandleError::AuthorizationFailure(
+                    "Repository permission required".into(),
+                ));
+            }
+        }
         let lore_response = match request {
             ParsedStorageRequest::Connect(request) => {
                 request

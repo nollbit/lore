@@ -97,6 +97,7 @@ pub struct StorageServiceV4 {
     local_store: Arc<dyn ImmutableStore>,
     mutable_store: Arc<dyn MutableStore>,
     session_map: Arc<SessionMap>,
+    session_tokens: dashmap::DashMap<u32, crate::auth::jwt::AuthorizationToken>,
     user_agent_filter: Arc<UserAgentFilter>,
 }
 
@@ -116,6 +117,7 @@ impl StorageServiceV4 {
             local_store,
             mutable_store,
             session_map: Arc::new(SessionMap::default()),
+            session_tokens: dashmap::DashMap::new(),
             user_agent_filter,
         }
     }
@@ -191,6 +193,7 @@ impl QuicService for StorageServiceV4 {
                 auth_token,
             } => {
                 let mut user_id = String::new();
+                let mut session_token = None;
 
                 if let Some(jwt_verifier) = self.jwt_verifier.as_ref() {
                     let token_str = String::from_utf8(auth_token).map_err(|err| {
@@ -211,12 +214,16 @@ impl QuicService for StorageServiceV4 {
                     crate::auth::jwt::verify_authorization(&authorization, repository)
                         .map_err(|err| MessageHandleError::AuthorizationFailure(err.to_string()))?;
 
+                    session_token = Some(authorization.clone());
                     user_id = crate::util::get_user_id_from_token(Some(authorization));
                 }
 
                 let session_map = self.session_map.clone();
                 match session_map.start(repository, correlation_id, user_id) {
                     Ok((session_id, correlation_id)) => {
+                        if let Some(token) = session_token {
+                            self.session_tokens.insert(session_id, token);
+                        }
                         debug!(
                             session_id,
                             repository = %repository,
@@ -233,6 +240,7 @@ impl QuicService for StorageServiceV4 {
                 }
             }
             ParsedStorageRequestV4::AuthorizeStop { session_id } => {
+                self.session_tokens.remove(&session_id);
                 let session_map = self.session_map.clone();
                 match session_map.stop(session_id) {
                     Ok(()) => {
@@ -264,6 +272,28 @@ impl QuicService for StorageServiceV4 {
                     tracing::warn!("Failed to parse v4 storage command: {err}");
                     MessageHandleError::InternalError
                 })?;
+
+                if self.jwt_verifier.is_some() {
+                    let token = self
+                        .session_tokens
+                        .get(&session_id)
+                        .ok_or(MessageHandleError::MissingToken)?;
+                    let action = match &parsed {
+                        crate::quic::storage_service::ParsedStorageRequest::Get(_)
+                        | crate::quic::storage_service::ParsedStorageRequest::GetMetadata(_)
+                        | crate::quic::storage_service::ParsedStorageRequest::Query(_)
+                        | crate::quic::storage_service::ParsedStorageRequest::GetResolved(_)
+                        | crate::quic::storage_service::ParsedStorageRequest::MutableLoad(_) => {
+                            "read"
+                        }
+                        _ => "write",
+                    };
+                    if !crate::auth::jwt::permits_action(&token, repository, action) {
+                        return Err(MessageHandleError::AuthorizationFailure(
+                            "Repository permission required".into(),
+                        ));
+                    }
+                }
 
                 // Dispatch to standalone handler functions with explicit session context
                 let response = match parsed {
@@ -316,6 +346,19 @@ impl QuicService for StorageServiceV4 {
                         .await
                     }
                     crate::quic::storage_service::ParsedStorageRequest::Copy(copy) => {
+                        if self.jwt_verifier.is_some()
+                            && !self.session_tokens.iter().any(|token| {
+                                crate::auth::jwt::permits_action(
+                                    token.value(),
+                                    copy.source_repository,
+                                    "read",
+                                )
+                            })
+                        {
+                            return Err(MessageHandleError::AuthorizationFailure(
+                                "Source repository permission required".into(),
+                            ));
+                        }
                         handle_copy(
                             copy.source_repository,
                             copy.source_address,

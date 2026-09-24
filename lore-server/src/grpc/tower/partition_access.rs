@@ -141,6 +141,46 @@ where
                 Err(status) => return Ok(status.into_http()),
             };
 
+            let method = request.uri().path().rsplit('/').next().unwrap_or("");
+            let action = match method {
+                "EnvironmentGet"
+                | "ServerInfo"
+                | "RepositoryGet"
+                | "RepositoryList"
+                | "RepositoryMetadataGet"
+                | "BranchGet"
+                | "BranchList"
+                | "BranchMetadataGet"
+                | "RevisionList"
+                | "RevisionInfo"
+                | "RevisionTree"
+                | "RevisionDiff"
+                | "ContentDiff"
+                | "Get"
+                | "GetMetadata"
+                | "GetResolved"
+                | "Query"
+                | "Status"
+                | "MutableLoad"
+                | "Subscribe"
+                | "SubscribeWithAcks"
+                | "RepositoryQuery"
+                | "BranchQuery"
+                | "BranchDiff"
+                | "BranchRevisionList"
+                | "RevisionDescribe"
+                | "RevisionStateHistory"
+                | "Ping" => "read",
+                "RepositoryCreate"
+                | "RepositoryDelete"
+                | "RepositoryMetadataSet"
+                | "BranchProtect"
+                | "BranchUnprotect"
+                | "BranchMetadataSet"
+                | "AdminLock" => "admin",
+                "Obliterate" => "obliterate",
+                _ => "write",
+            };
             let stage_started = std::time::Instant::now();
             // Authorization denials are flattened to `Denied` inside the
             // timed stage, so the only error escaping it is the timeout's
@@ -152,12 +192,18 @@ where
                     let token = get_verified_token(extensions);
                     Ok(
                         match authorizer.granted_actions(token.as_ref(), repository).await {
-                            Ok(Some(grants)) if grants.reachable() => Access::Granted(Some(grants)),
+                            Ok(Some(grants)) if grants.reachable() && grants.permits(action) => {
+                                Access::Granted(Some(grants))
+                            }
                             // Not enumerable: ask the reachability question
                             // directly.
                             Ok(None) => {
                                 match authorizer
-                                    .check_repository_access(token.as_ref(), repository, None)
+                                    .check_repository_access(
+                                        token.as_ref(),
+                                        repository,
+                                        Some(action),
+                                    )
                                     .await
                                 {
                                     Ok(()) => Access::Granted(None),
@@ -344,6 +390,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_grants_allow_browsing_but_deny_mutations() {
+        for method in [
+            "BranchGet",
+            "RevisionTree",
+            "RevisionDiff",
+            "Get",
+            "MutableLoad",
+            "RepositoryMetadataGet",
+            "BranchPush",
+            "Put",
+            "MutableStore",
+            "RepositoryDelete",
+            "BranchProtect",
+        ] {
+            let authorizer =
+                EnumeratingAuthorizer::new(Grants::Actions(["read".to_string()].into()));
+            let (mut service, inner) =
+                service_with(PartitionAccessLayer::new(authorizer, TEST_TIMEOUT));
+            let mut req = request(Some(repository()), true);
+            *req.uri_mut() = format!("/x.Service/{method}").parse().unwrap();
+            let response = service.call(req).await.unwrap();
+            let allowed = matches!(
+                method,
+                "BranchGet"
+                    | "RevisionTree"
+                    | "RevisionDiff"
+                    | "Get"
+                    | "MutableLoad"
+                    | "RepositoryMetadataGet"
+            );
+            assert_eq!(inner.calls(), usize::from(allowed), "{method}");
+            if !allowed {
+                assert_eq!(status_of(&response).code(), Code::PermissionDenied);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn a_denied_partition_never_reaches_the_service() {
         let authorizer = RecordingAuthorizer::new(false);
         let (mut service, inner) =
@@ -376,7 +460,11 @@ mod tests {
         // The reachability question, with the verified claims attached.
         assert_eq!(
             authorizer.asked(),
-            vec![(Some("the u".to_string()), repository(), None)]
+            vec![(
+                Some("the u".to_string()),
+                repository(),
+                Some("write".to_string())
+            )]
         );
     }
 
@@ -410,7 +498,10 @@ mod tests {
 
         assert_eq!(status_of(&response).code(), Code::PermissionDenied);
         assert_eq!(inner.calls(), 0);
-        assert_eq!(authorizer.asked(), vec![(None, repository(), None)]);
+        assert_eq!(
+            authorizer.asked(),
+            vec![(None, repository(), Some("write".to_string()))]
+        );
     }
 
     /// Partition metadata that is present but undecodable is refused, not
@@ -508,7 +599,7 @@ mod tests {
     /// an action check needs no second authorizer call.
     #[tokio::test]
     async fn an_enumeration_is_exposed_to_the_handler_and_answers_reachability() {
-        let grants = Grants::Actions(["migrate".to_string()].into());
+        let grants = Grants::Actions(["write".to_string()].into());
         let authorizer = EnumeratingAuthorizer::new(grants.clone());
         let inner = GrantsInner::default();
         let mut service =
@@ -797,7 +888,11 @@ mod tests {
             assert_eq!(inner.calls(), 0);
             assert_eq!(
                 authorizer.asked(),
-                vec![(Some("the bearer".to_string()), repository(), None)]
+                vec![(
+                    Some("the bearer".to_string()),
+                    repository(),
+                    Some("write".to_string())
+                )]
             );
         }
     }
