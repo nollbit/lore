@@ -45,6 +45,7 @@ use super::lock_service::LoreLockService;
 use crate::auth::jwt::JwtVerifier;
 use crate::auth::jwt_interceptor::JWTInterceptor;
 use crate::authnz::repository_authorizer::RepositoryAuthorizer;
+use crate::authnz::repository_catalog::RepositoryCatalog;
 use crate::correlation::layer::CorrelationIdLayer;
 use crate::correlation::layer::CorrelationIdLayerBuilder;
 use crate::correlation::layer::TraceLayerConfig;
@@ -536,12 +537,28 @@ pub struct WantsHttp2Config {
     admin_svc: LoreAdminService,
 }
 
+/// The two server-side bounds a partition-scoped RPC answers to. They stay
+/// separate because neither can stand in for the other: the authorization
+/// bound covers one online call this server makes and nothing else, while
+/// stretching it over the handler would also span tonic's decode of the
+/// request body and so expire on a client that is slow to finish sending.
+#[derive(Clone, Copy, Debug)]
+pub struct GrpcTimeouts {
+    /// What a handler allows itself for the work it owns. Kept below the load
+    /// balancer's timeout so a stuck request is observed here rather than as
+    /// a 504 at the balancer.
+    pub request_handler: Duration,
+    /// What the partition-access check ahead of a handler allows for reaching
+    /// the authorizer.
+    pub authorization: Duration,
+}
+
 impl GrpcServerBuilder<WantsHttp2Config> {
     pub fn with_http2_config(
         self,
         http2_keep_alive_interval: Option<Duration>,
         http2_keep_alive_timeout: Option<Duration>,
-        request_handler_timeout: Duration,
+        timeouts: GrpcTimeouts,
         service_settings: GrpcPublicServicesSettings,
         user_agent_filter: Arc<UserAgentFilter>,
         forwarded_requests: Option<Arc<dyn ForwardedRequests>>,
@@ -560,7 +577,8 @@ impl GrpcServerBuilder<WantsHttp2Config> {
             admin_svc: self.0.admin_svc,
             http2_keep_alive_interval,
             http2_keep_alive_timeout,
-            request_handler_timeout,
+            request_handler_timeout: timeouts.request_handler,
+            authorization_timeout: timeouts.authorization,
             service_settings,
             user_agent_filter,
             forwarded_requests,
@@ -583,6 +601,7 @@ pub struct MaybeJwtVerifier {
     http2_keep_alive_interval: Option<Duration>,
     http2_keep_alive_timeout: Option<Duration>,
     request_handler_timeout: Duration,
+    authorization_timeout: Duration,
     service_settings: GrpcPublicServicesSettings,
     user_agent_filter: Arc<UserAgentFilter>,
     forwarded_requests: Option<Arc<dyn ForwardedRequests>>,
@@ -602,13 +621,13 @@ impl GrpcServerBuilder<MaybeJwtVerifier> {
         lock_service
     }
 
-    /// The one registration path for a partition-scoped authenticated
-    /// service: the JWT interceptor verifies the token, and the
-    /// [`PartitionAccessLayer`] inside it asks the configured authorizer
-    /// whether that caller may reach the partition the request names.
-    /// Per-operation permissions are the handlers' own checks, answered from
-    /// the `PartitionGrants` extension the layer exposes (or the authorizer,
-    /// when the grants are not enumerable).
+    /// The one registration path for a partition-scoped service: the JWT
+    /// interceptor verifies the token, and the [`PartitionAccessLayer`]
+    /// inside it asks the configured authorizer whether that caller may
+    /// reach the partition the request names. Per-operation permissions are
+    /// checked in the handlers, answered from the `PartitionGrants`
+    /// extension the layer exposes (or the authorizer, when the grants are
+    /// not enumerable).
     ///
     /// This layer checks access only from the request metadata headers,
     /// which covers most of the operations. If the authorization decision
@@ -616,15 +635,20 @@ impl GrpcServerBuilder<MaybeJwtVerifier> {
     /// check inside the handler (e.g. notification subscribe, lock action
     /// checks). The middleware sees the request body only as a binary stream,
     /// so we cannot easily action on any body values.
+    ///
+    /// `authorization_timeout` bounds that access check alone, not the
+    /// service behind it: the body is decoded inside the wrapped service, so
+    /// a bound reaching that far would charge a client's send time to the
+    /// server. Handlers time out their own work.
     fn partition_scoped<S>(
         service: S,
         jwt_interceptor: &JWTInterceptor,
         authorizer: &Arc<dyn RepositoryAuthorizer>,
-        request_timeout: Duration,
+        authorization_timeout: Duration,
     ) -> tonic::service::interceptor::InterceptedService<PartitionAccessService<S>, JWTInterceptor>
     {
         tonic::service::interceptor::InterceptedService::new(
-            PartitionAccessLayer::new(authorizer.clone(), request_timeout).layer(service),
+            PartitionAccessLayer::new(authorizer.clone(), authorization_timeout).layer(service),
             jwt_interceptor.clone(),
         )
     }
@@ -633,8 +657,10 @@ impl GrpcServerBuilder<MaybeJwtVerifier> {
         self,
         jwt_verifier: Option<JwtVerifier>,
         repository_authorizer: Arc<dyn RepositoryAuthorizer>,
+        repository_catalog: Arc<dyn RepositoryCatalog>,
     ) -> Result<GrpcServerBuilder<WantsAddress>> {
         let rpc_timeout = self.0.request_handler_timeout;
+        let authorization_timeout = self.0.authorization_timeout;
         let services = &self.0.service_settings;
         let mut registered = Vec::new();
         let mut check_enabled = |settings: &dyn GrpcServiceSettings, name: &'static str| {
@@ -692,6 +718,7 @@ impl GrpcServerBuilder<MaybeJwtVerifier> {
         let thin_client_v1_svc = LoreThinClientV1Service::new(
             self.0.immutable_store.clone(),
             self.0.mutable_store.clone(),
+            repository_authorizer.clone(),
             rpc_timeout,
             revision_diff_config,
             history_step_size,
@@ -706,12 +733,14 @@ impl GrpcServerBuilder<MaybeJwtVerifier> {
             self.0.immutable_store.clone(),
             self.0.local_store.clone(),
             self.0.mutable_store.clone(),
+            repository_authorizer.clone(),
         );
         let revision_svc = ServiceBuilder::new().service(LoreRevisionService::new(
             self.0.immutable_store.clone(),
             self.0.mutable_store.clone(),
             self.0.notification_sender.clone(),
             self.0.hook_dispatcher.clone(),
+            repository_authorizer.clone(),
             history_step_size,
             acceleration,
             rpc_timeout,
@@ -729,6 +758,7 @@ impl GrpcServerBuilder<MaybeJwtVerifier> {
         let repository_svc = LoreRepositoryService::new(
             self.0.environment.clone(),
             repository_authorizer.clone(),
+            repository_catalog.clone(),
             self.0.immutable_store.clone(),
             self.0.mutable_store.clone(),
             self.0.hook_dispatcher.clone(),
@@ -737,6 +767,7 @@ impl GrpcServerBuilder<MaybeJwtVerifier> {
         let repository_v1_svc = LoreRepositoryV1Service::new(
             self.0.environment.clone(),
             repository_authorizer.clone(),
+            repository_catalog,
             self.0.immutable_store.clone(),
             self.0.mutable_store.clone(),
             self.0.hook_dispatcher.clone(),
@@ -758,146 +789,89 @@ impl GrpcServerBuilder<MaybeJwtVerifier> {
         let notification_service = self.0.notification_service;
 
         let authenticated = jwt_verifier.is_some();
+        let jwt_interceptor = JWTInterceptor::new(jwt_verifier.as_ref());
 
         if check_enabled(&services.admin_service, "admin_service") {
             router = router.add_service(AdminServiceServer::new(admin_svc));
         }
-
-        if let Some(jwt_verifier) = jwt_verifier.as_ref() {
-            let jwt_interceptor = JWTInterceptor::new(jwt_verifier);
-
-            if check_enabled(&services.storage_service, "storage_service") {
-                router = router
-                    .add_service(Self::partition_scoped(
-                        StorageServiceServer::new(storage_svc.clone()),
-                        &jwt_interceptor,
-                        &repository_authorizer,
-                        rpc_timeout,
-                    ))
-                    .add_service(Self::partition_scoped(
-                        storage_service_v1_server::StorageServiceServer::new(storage_svc),
-                        &jwt_interceptor,
-                        &repository_authorizer,
-                        rpc_timeout,
-                    ));
-            }
-            if check_enabled(&services.revision_service, "revision_service") {
-                router = router
-                    .add_service(Self::partition_scoped(
-                        RevisionServiceServer::new(revision_svc),
-                        &jwt_interceptor,
-                        &repository_authorizer,
-                        rpc_timeout,
-                    ))
-                    .add_service(Self::partition_scoped(
-                        revision_v1_server::RevisionServiceServer::new(revision_v1_svc),
-                        &jwt_interceptor,
-                        &repository_authorizer,
-                        rpc_timeout,
-                    ));
-            }
-            if check_enabled(&services.thin_client_service, "thin_client_service") {
-                router = router.add_service(Self::partition_scoped(
-                    thin_client_v1_server::ThinClientServiceServer::new(thin_client_v1_svc),
+        if check_enabled(&services.storage_service, "storage_service") {
+            router = router
+                .add_service(Self::partition_scoped(
+                    StorageServiceServer::new(storage_svc.clone()),
                     &jwt_interceptor,
                     &repository_authorizer,
-                    rpc_timeout,
-                ));
-            }
-            if check_enabled(&services.repository_service, "repository_service") {
-                router = router
-                    .add_service(RepositoryServiceServer::with_interceptor(
-                        repository_svc,
-                        jwt_interceptor.clone(),
-                    ))
-                    .add_service(
-                        repository_v1_server::RepositoryServiceServer::with_interceptor(
-                            repository_v1_svc,
-                            jwt_interceptor.clone(),
-                        ),
-                    );
-            }
-            if check_enabled(&services.environment_service, "environment_service") {
-                router = router
-                    .add_service(EnvironmentServiceServer::new(environment_svc))
-                    .add_service(environment_v1_server::EnvironmentServiceServer::new(
-                        environment_v1_svc,
-                    ));
-            }
-
-            // Locks require auth, so set that up here
-            if let Some(lock_svc) = lock_svc
-                && check_enabled(&services.lock_service, "lock_service")
-            {
-                let lock_service =
-                    Self::make_lock_service(services.lock_service.general(), lock_svc);
-                router = router.add_service(Self::partition_scoped(
-                    lock_service,
+                    authorization_timeout,
+                ))
+                .add_service(Self::partition_scoped(
+                    storage_service_v1_server::StorageServiceServer::new(storage_svc),
                     &jwt_interceptor,
                     &repository_authorizer,
-                    rpc_timeout,
+                    authorization_timeout,
                 ));
-            }
-
-            // Notifications require auth
-            if let Some(notification_service) = notification_service
-                && check_enabled(&services.notification_service, "notification_service")
-            {
-                router = router.add_service(
-                    lore_notification::NotificationServiceServer::with_interceptor(
-                        notification_service,
+        }
+        if check_enabled(&services.revision_service, "revision_service") {
+            router = router
+                .add_service(Self::partition_scoped(
+                    RevisionServiceServer::new(revision_svc),
+                    &jwt_interceptor,
+                    &repository_authorizer,
+                    authorization_timeout,
+                ))
+                .add_service(Self::partition_scoped(
+                    revision_v1_server::RevisionServiceServer::new(revision_v1_svc),
+                    &jwt_interceptor,
+                    &repository_authorizer,
+                    authorization_timeout,
+                ));
+        }
+        if check_enabled(&services.thin_client_service, "thin_client_service") {
+            router = router.add_service(Self::partition_scoped(
+                thin_client_v1_server::ThinClientServiceServer::new(thin_client_v1_svc),
+                &jwt_interceptor,
+                &repository_authorizer,
+                authorization_timeout,
+            ));
+        }
+        if check_enabled(&services.repository_service, "repository_service") {
+            router = router
+                .add_service(RepositoryServiceServer::with_interceptor(
+                    repository_svc,
+                    jwt_interceptor.clone(),
+                ))
+                .add_service(
+                    repository_v1_server::RepositoryServiceServer::with_interceptor(
+                        repository_v1_svc,
                         jwt_interceptor.clone(),
                     ),
                 );
-            }
-        } else {
-            if check_enabled(&services.storage_service, "storage_service") {
-                router = router
-                    .add_service(StorageServiceServer::new(storage_svc.clone()))
-                    .add_service(storage_service_v1_server::StorageServiceServer::new(
-                        storage_svc,
-                    ));
-            }
-            if check_enabled(&services.revision_service, "revision_service") {
-                router = router
-                    .add_service(RevisionServiceServer::new(revision_svc))
-                    .add_service(revision_v1_server::RevisionServiceServer::new(
-                        revision_v1_svc,
-                    ));
-            }
-            if check_enabled(&services.thin_client_service, "thin_client_service") {
-                router = router.add_service(thin_client_v1_server::ThinClientServiceServer::new(
-                    thin_client_v1_svc,
+        }
+        if check_enabled(&services.environment_service, "environment_service") {
+            router = router
+                .add_service(EnvironmentServiceServer::new(environment_svc))
+                .add_service(environment_v1_server::EnvironmentServiceServer::new(
+                    environment_v1_svc,
                 ));
-            }
-            if check_enabled(&services.repository_service, "repository_service") {
-                router = router
-                    .add_service(RepositoryServiceServer::new(repository_svc))
-                    .add_service(repository_v1_server::RepositoryServiceServer::new(
-                        repository_v1_svc,
-                    ));
-            }
-            if check_enabled(&services.environment_service, "environment_service") {
-                router = router
-                    .add_service(EnvironmentServiceServer::new(environment_svc))
-                    .add_service(environment_v1_server::EnvironmentServiceServer::new(
-                        environment_v1_svc,
-                    ));
-            }
-            if let Some(lock_svc) = lock_svc
-                && check_enabled(&services.lock_service, "lock_service")
-            {
-                let lock_service =
-                    Self::make_lock_service(services.lock_service.general(), lock_svc);
-                router = router.add_service(lock_service);
-            }
-            if let Some(notification_service) = notification_service
-                && check_enabled(&services.notification_service, "notification_service")
-            {
-                router = router.add_service(lore_notification::NotificationServiceServer::new(
+        }
+        if let Some(lock_svc) = lock_svc
+            && check_enabled(&services.lock_service, "lock_service")
+        {
+            let lock_service = Self::make_lock_service(services.lock_service.general(), lock_svc);
+            router = router.add_service(Self::partition_scoped(
+                lock_service,
+                &jwt_interceptor,
+                &repository_authorizer,
+                authorization_timeout,
+            ));
+        }
+        if let Some(notification_service) = notification_service
+            && check_enabled(&services.notification_service, "notification_service")
+        {
+            router = router.add_service(
+                lore_notification::NotificationServiceServer::with_interceptor(
                     notification_service,
-                ));
-            }
+                    jwt_interceptor.clone(),
+                ),
+            );
         }
 
         info!(

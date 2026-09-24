@@ -19,6 +19,7 @@ use std::sync::atomic::Ordering;
 
 use bitflags::bitflags;
 use bytes::Bytes;
+pub use diff::DiffWalkStats;
 pub use diff::GraftOracle;
 use lore_base::error::InvalidPath;
 use lore_base::lore_spawn;
@@ -2178,11 +2179,13 @@ impl State {
             }
 
             let (idx, block) = self.allocate_fresh_block()?;
-            return self.try_grab_in(&block, idx).ok_or_else(|| {
+            let node_id = self.try_grab_in(&block, idx).ok_or_else(|| {
                 StateError::internal(
                     "grab_node_unused returned INVALID on a freshly-allocated block",
                 )
-            });
+            })?;
+            self.push_unused_block_list(idx, &block);
+            return Ok(node_id);
         }
     }
 
@@ -2291,12 +2294,15 @@ impl State {
         Some((block_index, block))
     }
 
-    /// Allocate a fresh `NodeBlock`, push it onto the runtime's block vector
-    /// and splice it at the head of the unused chain. Errors only when the
-    /// per-tree block limit is reached. The returned block is guaranteed to
-    /// have at least one free slot — a newly-zeroed block has
-    /// `node_count == 0`, well below `BLOCK_NODE_COUNT` — so the caller's
-    /// grab is structurally guaranteed to succeed.
+    /// Allocate a fresh `NodeBlock` and push it onto the runtime's block vector, leaving it
+    /// out of the unused chain. Errors only when the per-tree block limit is reached.
+    ///
+    /// Staying out of the chain is what makes the caller's grab certain to succeed: a
+    /// newly-zeroed block has `node_count == 0`, well below `BLOCK_NODE_COUNT`, and the chain
+    /// is the only way another grabber reaches a block, so while the caller holds the
+    /// allocation permit nothing else can take a slot from this one. The caller splices it in
+    /// with [`Self::push_unused_block_list`] once it has taken its own, as the recycling path
+    /// does.
     fn allocate_fresh_block(&self) -> Result<(usize, Arc<NodeBlock>), StateError> {
         let mut runtime = self.runtime.write();
         let block_index = runtime.block.len();
@@ -2312,18 +2318,13 @@ impl State {
         }
         runtime.block.push(Arc::downgrade(&block));
 
-        let prior_head = if let Some(tree) = runtime.tree.as_mut() {
-            let prior = tree.block_unused_first;
+        if let Some(tree) = runtime.tree.as_mut() {
             tree.block_count = 1 + block_index as u32;
-            tree.block_unused_first = block_index as u32;
             tree.flags |= TreeFlags::Dirty;
-            prior
-        } else {
-            INVALID_BLOCK
-        };
+        }
         {
             let mut block_writer = block.write();
-            block_writer.node_block().block_unused_next = prior_head;
+            block_writer.node_block().block_unused_next = INVALID_BLOCK;
             block_writer.mark_dirty();
         }
         drop(runtime);
@@ -4376,6 +4377,7 @@ impl State {
 pub async fn rebase_staged_anchor(
     repository: Arc<RepositoryContext>,
     new_current_signature: Hash,
+    force: bool,
 ) -> Result<(), StateError> {
     let Some(old_staged_signature) = crate::instance::load_staged_revision(&repository)
         .await
@@ -4395,6 +4397,7 @@ pub async fn rebase_staged_anchor(
         repository.clone(),
         old_staged_signature,
         new_current_signature,
+        force,
     )
     .await?
     else {
@@ -4412,10 +4415,19 @@ pub async fn rebase_staged_anchor(
 ///
 /// Returns the signature of the rebased state, leaving persistence to the
 /// caller, or `None` when nothing needs staging on top of the new current.
+///
+/// `force` carries forward dirty paths `repository`'s filter excludes, for a
+/// caller whose filter is the one those paths were recorded under. An operation
+/// that changes the view is not such a caller: its filter is the one the working
+/// tree is left materialized under, so a path it excludes names a file the tree
+/// no longer holds. A status asks the same filter and so reports nothing of a
+/// flag carried there, until the view widens again and it surfaces as a local
+/// change to a file nothing touched.
 pub async fn rebase_staged_state(
     repository: Arc<RepositoryContext>,
     old_staged_signature: Hash,
     new_current_signature: Hash,
+    force: bool,
 ) -> Result<Option<Hash>, StateError> {
     let old_staged_state = State::deserialize(repository.clone(), old_staged_signature).await?;
     let has_dirty = old_staged_state
@@ -4427,12 +4439,16 @@ pub async fn rebase_staged_state(
     }
 
     let mut dirty_paths: Vec<RelativePath> = Vec::new();
-    collect_dirty_paths(
+    collect_dirty_paths_inner(
         old_staged_state,
         repository.clone(),
         crate::node::ROOT_NODE,
-        RelativePathBuf::new(),
+        &mut RelativePathBuf::new(),
         &mut dirty_paths,
+        DirtyWalkOptions {
+            skip_staged: false,
+            force,
+        },
     )
     .await?;
 
@@ -5603,6 +5619,10 @@ pub fn detect_and_coalesce_moves(changes: &mut Vec<NodeChange>) {
 /// — does **not** run the post-walk move-coalescing or path-sort fixup that
 /// the legacy `Vec`-returning version applied. Callers that want the
 /// historical buffered-and-coalesced shape use `diff_collect` instead.
+///
+/// Answers with what the walk did rather than what it found, for a caller
+/// measuring it; the changes are the `changes` channel's. `diff_collect`
+/// discards it.
 #[allow(clippy::too_many_arguments)]
 pub async fn diff(
     repository_from: Arc<RepositoryContext>,
@@ -5613,7 +5633,7 @@ pub async fn diff(
     graft: Option<Arc<GraftOracle>>,
     changes: &ChangeSender,
     filter_mode: FilterMode,
-) -> Result<(), StateError> {
+) -> Result<DiffWalkStats, StateError> {
     if let Some(path) = path {
         let from_link = state_from
             .find_node_link(repository_from.clone(), path.as_str())
@@ -5645,7 +5665,7 @@ pub async fn diff(
             node_change_state(&repository_from, &state_from, from_link.node, path.clone()).await;
         let to = node_change_state(&repository_to, &state_to, to_link.node, path.clone()).await;
 
-        diff::diff_subtree(from, to, path, 0, graft, changes, filter_mode).await?;
+        diff::diff_subtree(from, to, path, graft, changes, filter_mode).await
     } else {
         diff::diff_subtree(
             NodeChangeState {
@@ -5673,15 +5693,12 @@ pub async fn diff(
                 mode: 0,
             },
             RelativePath::new(),
-            0,
             graft,
             changes,
             filter_mode,
         )
-        .await?;
+        .await
     }
-
-    Ok(())
 }
 
 /// The node `node_id` of `state` at `path`, as one side of a change, carrying the flags and
@@ -5728,7 +5745,7 @@ pub async fn diff_collect_subtree(
     filter_mode: FilterMode,
 ) -> Result<Vec<NodeChange>, StateError> {
     let mut changes = ChangeStream::spawn(async move |changes| {
-        diff::diff_subtree(from, to, path, 0, None, &changes, filter_mode).await
+        diff::diff_subtree(from, to, path, None, &changes, filter_mode).await
     })
     .collect()
     .await?;
@@ -9972,9 +9989,26 @@ bitflags! {
 }
 bitflagsops!(TreeFlags, u32);
 
+/// The side a delete hierarchy enumerates, which is the side its caller drew the filter verdict
+/// from.
+///
+/// `from` where the walk found the deletion between two trees, `to` where a stage recorded it and
+/// there is no from node at all. The tree and the verdict travel together: a verdict names lines
+/// by index into one filter, and the same indices read different rules in another.
+fn delete_hierarchy_side(from: NodeChangeState, to: &NodeChangeState) -> Option<NodeChangeState> {
+    if from.mapping.node.is_valid_or_root_node_id() {
+        Some(from)
+    } else if to.mapping.node.is_valid_or_root_node_id() {
+        Some(to.clone())
+    } else {
+        None
+    }
+}
+
 /// Recursively add delete changes for an entire directory hierarchy.
 ///
-/// `states` is the filter's verdict for the path being walked, which each child steps from.
+/// `states` is the filter's verdict for the path being walked, which each child steps from. It
+/// belongs to the filter [`delete_hierarchy_side`] answers with.
 async fn add_hierarchy_delete(
     from: NodeChangeState,
     to: NodeChangeState,
@@ -9982,47 +10016,35 @@ async fn add_hierarchy_delete(
     filter_mode: FilterMode,
     states: FilterStates,
 ) -> Result<(), StateError> {
-    // Try to get nodes from both states first
-    let from_node = if from.mapping.node.is_valid_or_root_node_id() {
-        from.mapping
-            .state
-            .node(from.mapping.repository.clone(), from.mapping.node)
-            .await
-            .ok()
-    } else {
-        None
-    };
-
-    let to_node = if to.mapping.node.is_valid_or_root_node_id() {
-        to.mapping
-            .state
-            .node(to.mapping.repository.clone(), to.mapping.node)
-            .await
-            .ok()
-    } else {
-        None
-    };
-
-    // Choose the state, "from" for normal deletions, "to" for merge deletions
-    let (iteration_state, node) = if let Some(from_node) = from_node {
-        (from, Some(from_node))
-    } else if let Some(to_node) = to_node {
-        (to.clone(), Some(to_node))
-    } else {
+    let Some(iteration_state) = delete_hierarchy_side(from, &to) else {
         return Ok(());
     };
 
-    // File nodes end recursion
-    if node.map(|n| n.is_file()).unwrap_or_default() {
+    let node = match iteration_state
+        .mapping
+        .state
+        .node(
+            iteration_state.mapping.repository.clone(),
+            iteration_state.mapping.node,
+        )
+        .await
+    {
+        Ok(node) => node,
+        Err(err) => {
+            lore_warn!(
+                "Skipping deletes below {}: node {} could not be read: {err}",
+                iteration_state.mapping.path,
+                iteration_state.mapping.node
+            );
+            return Ok(());
+        }
+    };
+
+    // A link holds children a delete does not name: the mount path stands for them
+    if node.is_file() || node.is_link() {
         return Ok(());
     }
 
-    // Link nodes don't recurse - don't show individual link files as deleted
-    if node.map(|n| n.is_link()).unwrap_or_default() {
-        return Ok(());
-    }
-
-    // Iterate children from whichever state has the node
     let mut children = StateNodeChildrenWithNameIterator::new(
         iteration_state.mapping.state.clone(),
         iteration_state.mapping.repository.clone(),
@@ -10037,7 +10059,6 @@ async fn add_hierarchy_delete(
             .push_into_buf(child_name)
             .freeze();
 
-        // Skip excluded paths
         let (child_states, excluded) = iteration_state
             .mapping
             .repository

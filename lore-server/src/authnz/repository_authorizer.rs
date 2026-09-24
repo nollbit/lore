@@ -36,6 +36,32 @@ pub struct VerifiedToken<'a> {
     pub claims: &'a AuthorizationToken,
 }
 
+impl VerifiedToken<'_> {
+    pub fn owned(&self) -> VerifiedTokenOwned {
+        VerifiedTokenOwned {
+            raw: self.raw.to_string(),
+            claims: self.claims.clone(),
+        }
+    }
+}
+
+/// Owned form of [`VerifiedToken`], for state that outlives the request or
+/// frame that carried the token: a QUIC session, a per-item stream task.
+#[derive(Clone)]
+pub struct VerifiedTokenOwned {
+    pub raw: String,
+    pub claims: AuthorizationToken,
+}
+
+impl VerifiedTokenOwned {
+    pub fn as_token(&self) -> VerifiedToken<'_> {
+        VerifiedToken {
+            raw: &self.raw,
+            claims: &self.claims,
+        }
+    }
+}
+
 /// A caller's enumerated access to one partition.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Grants {
@@ -97,9 +123,83 @@ pub trait RepositoryAuthorizer: Send + Sync {
     ) -> Result<Option<Grants>, Status> {
         Ok(None)
     }
+
+    /// [`check_repository_access`](Self::check_repository_access) for call
+    /// sites that cannot await: the cross-partition link-read closure runs
+    /// inside revision-graph traversal, potentially many times per request.
+    /// `None` means the answer needs I/O this authorizer cannot do here.
+    /// Such callers must deny, and the online paths keep today's behaviour
+    /// because they never granted a link read without an in-token claim.
+    ///
+    /// The token-based authorizers always answer: the verdict is in a token
+    /// the interceptor already verified, so no cache, preload or staleness
+    /// bound is needed on those paths.
+    fn check_repository_access_sync(
+        &self,
+        _token: Option<&VerifiedToken<'_>>,
+        _repository_id: RepositoryId,
+        _action: Option<&str>,
+    ) -> Option<Result<(), Status>> {
+        None
+    }
 }
 
 impl dyn RepositoryAuthorizer {
+    /// Enumerate access and require an unexpired token grant for the requested action.
+    pub async fn granted_action_access(
+        &self,
+        token: Option<&VerifiedToken<'_>>,
+        repository_id: RepositoryId,
+        action: &str,
+    ) -> Result<Option<Grants>, Status> {
+        if let Some(token) = token {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if token.claims.expires <= now {
+                return Err(crate::grpc::no_repository_access_status());
+            }
+        }
+        match self.granted_actions(token, repository_id).await {
+            Ok(Some(grants)) if grants.permits(action) => Ok(Some(grants)),
+            Ok(None) => self
+                .check_repository_access(token, repository_id, Some(action))
+                .await
+                .map(|()| None)
+                .map_err(|_| crate::grpc::no_repository_access_status()),
+            _ => Err(crate::grpc::no_repository_access_status()),
+        }
+    }
+
+    /// Reachability of `repository_id`, with the caller's enumerated grants
+    /// when this authorizer can enumerate them: `Ok(Some(grants))` also
+    /// answers later action checks in memory, `Ok(None)` means reachable but
+    /// per-action checks must ask the authorizer. Denials are flattened to
+    /// [`no_repository_access_status`] so an unauthorized caller learns
+    /// nothing from the reason.
+    ///
+    /// The one call every partition-scoped entry point makes — the gRPC
+    /// partition-access layer, the QUIC session start / connect, and the
+    /// HTTP middleware — each exposing the grants to its handlers in its own
+    /// carrier ([`PartitionGrants`] extension, session entry, connection
+    /// context).
+    pub async fn granted_access(
+        &self,
+        token: Option<&VerifiedToken<'_>>,
+        repository_id: RepositoryId,
+    ) -> Result<Option<Grants>, Status> {
+        match self.granted_actions(token, repository_id).await {
+            Ok(Some(grants)) if grants.reachable() => Ok(Some(grants)),
+            Ok(None) => self
+                .check_repository_access(token, repository_id, None)
+                .await
+                .map(|()| None)
+                .map_err(|_denied| crate::grpc::no_repository_access_status()),
+            _ => Err(crate::grpc::no_repository_access_status()),
+        }
+    }
+
     /// Whether the caller may perform `action` on `repository_id` — the one
     /// call a handler makes for a fine-grained permission check.
     ///
@@ -150,6 +250,15 @@ impl RepositoryAuthorizer for AllowAllRepositoryAuthorizer {
         _repository_id: RepositoryId,
     ) -> Result<Option<Grants>, Status> {
         Ok(Some(Grants::All))
+    }
+
+    fn check_repository_access_sync(
+        &self,
+        _token: Option<&VerifiedToken<'_>>,
+        _repository_id: RepositoryId,
+        _action: Option<&str>,
+    ) -> Option<Result<(), Status>> {
+        Some(Ok(()))
     }
 }
 
@@ -213,7 +322,7 @@ fn check_user_permission_request(
     )
 }
 
-fn bearer_header(token: Option<&VerifiedToken<'_>>) -> Option<String> {
+pub(super) fn bearer_header(token: Option<&VerifiedToken<'_>>) -> Option<String> {
     token.map(|token| format!("Bearer {}", token.raw))
 }
 
@@ -259,16 +368,19 @@ fn grants_from_response(response: &CheckUserPermissionResponse, resource_id: &st
 
 /// Answer an access question from the `resources` claim of an exchanged
 /// access token. `action: None` asks whether any entry names the partition.
-/// `action: Some` asks for membership in the merged permission lists.
+/// `action: Some` asks whether a matching entry grants the action. Answered
+/// in place rather than through [`grants_from_resources_claim`]: the
+/// link-read closure asks this per link, and the merged permission set is
+/// only worth building for an enumeration.
 fn evaluate_resources_claim(
     resources: &[crate::auth::jwt::ResourcePermission],
     repository_id: RepositoryId,
     action: Option<&str>,
 ) -> Result<(), Status> {
-    let grants = grants_from_resources_claim(resources, repository_id);
+    let matcher = ResourceMatcher::default();
     let permitted = match action {
-        None => grants.reachable(),
-        Some(action) => grants.permits(action),
+        None => matcher.any_match(resources, repository_id),
+        Some(action) => matcher.permits(resources, repository_id, action),
     };
     if permitted {
         Ok(())
@@ -332,11 +444,24 @@ impl RepositoryAuthorizer for AuthClientAuthorizer {
         // claim and are checked online — the identity-token paths are where
         // revocation is observable. An access token's grants hold for its
         // lifetime, on this path as on QUIC.
-        if let Some(resources) = token.and_then(|token| token.claims.resources.as_deref()) {
-            return evaluate_resources_claim(resources, repository_id, action);
+        if let Some(verdict) = self.check_repository_access_sync(token, repository_id, action) {
+            return verdict;
         }
         self.check_access_with_header(bearer_header(token), repository_id, action)
             .await
+    }
+
+    /// An access token is answered from its `resources` claim, exactly as
+    /// the async path does. An identity token needs `CheckUserPermission`,
+    /// so `None`.
+    fn check_repository_access_sync(
+        &self,
+        token: Option<&VerifiedToken<'_>>,
+        repository_id: RepositoryId,
+        action: Option<&str>,
+    ) -> Option<Result<(), Status>> {
+        let resources = token.and_then(|token| token.claims.resources.as_deref())?;
+        Some(evaluate_resources_claim(resources, repository_id, action))
     }
 
     async fn granted_actions(
@@ -604,6 +729,252 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    mod sync_check {
+        use std::str::FromStr;
+
+        use lore_base::types::Context;
+
+        use super::*;
+
+        fn repository() -> RepositoryId {
+            Context::from_str("0194b726b34e72b0b45550b88a967076")
+                .unwrap()
+                .into()
+        }
+
+        /// Implements only the required method, so the sync check is the
+        /// trait's default.
+        struct PolicyOnly;
+
+        #[async_trait]
+        impl RepositoryAuthorizer for PolicyOnly {
+            async fn check_repository_access(
+                &self,
+                _token: Option<&VerifiedToken<'_>>,
+                _repository_id: RepositoryId,
+                _action: Option<&str>,
+            ) -> Result<(), Status> {
+                Ok(())
+            }
+        }
+
+        #[test]
+        fn default_cannot_answer_without_io() {
+            assert!(
+                PolicyOnly
+                    .check_repository_access_sync(None, repository(), None)
+                    .is_none()
+            );
+        }
+
+        #[test]
+        fn allow_all_answers_everything() {
+            let claims = AuthorizationToken::default();
+            let token = VerifiedToken {
+                raw: "raw",
+                claims: &claims,
+            };
+            for token in [None, Some(&token)] {
+                for action in [None, Some("obliterate")] {
+                    AllowAllRepositoryAuthorizer
+                        .check_repository_access_sync(token, repository(), action)
+                        .expect("allow-all needs no I/O")
+                        .unwrap();
+                }
+            }
+        }
+
+        /// An access token's `resources` claim is the auth service's own
+        /// signed answer, so the legacy authorizer answers it in place and
+        /// agrees with its async path. An identity token needs the network.
+        #[tokio::test]
+        async fn auth_client_answers_access_tokens_and_declines_identity_tokens() {
+            let authorizer = AuthClientAuthorizer::new("https://auth.invalid".to_string());
+            let granted = AuthorizationToken {
+                resources: Some(vec![crate::auth::jwt::ResourcePermission {
+                    resource_id: format!("urc-{}", repository()),
+                    permission: vec!["migrate".to_string()],
+                }]),
+                ..Default::default()
+            };
+            let elsewhere = AuthorizationToken {
+                resources: Some(vec![crate::auth::jwt::ResourcePermission {
+                    resource_id: "urc-somewhere-else".to_string(),
+                    permission: vec![],
+                }]),
+                ..Default::default()
+            };
+            for claims in [&granted, &elsewhere] {
+                let token = VerifiedToken {
+                    raw: "raw.jwt",
+                    claims,
+                };
+                for action in [None, Some("migrate"), Some("obliterate")] {
+                    let sync = authorizer
+                        .check_repository_access_sync(Some(&token), repository(), action)
+                        .expect("access tokens are answered in place");
+                    let asynchronous = authorizer
+                        .check_repository_access(Some(&token), repository(), action)
+                        .await;
+                    assert_eq!(
+                        sync.is_ok(),
+                        asynchronous.is_ok(),
+                        "{action:?} on {claims:?}"
+                    );
+                }
+            }
+
+            let identity = AuthorizationToken::default();
+            let token = VerifiedToken {
+                raw: "raw.jwt",
+                claims: &identity,
+            };
+            assert!(
+                authorizer
+                    .check_repository_access_sync(Some(&token), repository(), None)
+                    .is_none()
+            );
+            assert!(
+                authorizer
+                    .check_repository_access_sync(None, repository(), None)
+                    .is_none()
+            );
+        }
+    }
+
+    mod granted_access {
+        use std::str::FromStr;
+
+        use lore_base::types::Context;
+
+        use super::*;
+        use crate::grpc::no_repository_access_status;
+
+        fn repository() -> RepositoryId {
+            Context::from_str("0194b726b34e72b0b45550b88a967076")
+                .unwrap()
+                .into()
+        }
+
+        /// Non-enumerable: `granted_actions` keeps its `Ok(None)` default and
+        /// only the per-question path answers.
+        struct PolicyOnly(bool);
+
+        #[async_trait]
+        impl RepositoryAuthorizer for PolicyOnly {
+            async fn check_repository_access(
+                &self,
+                _token: Option<&VerifiedToken<'_>>,
+                _repository_id: RepositoryId,
+                action: Option<&str>,
+            ) -> Result<(), Status> {
+                assert_eq!(action, None, "granted_access asks reachability only");
+                if self.0 {
+                    Ok(())
+                } else {
+                    Err(Status::permission_denied("the policy's own reason"))
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn enumerable_authorizer_yields_its_grants() {
+            let authorizer: Arc<dyn RepositoryAuthorizer> = Arc::new(AllowAllRepositoryAuthorizer);
+            let grants = authorizer.granted_access(None, repository()).await.unwrap();
+            assert_eq!(grants, Some(Grants::All));
+        }
+
+        #[tokio::test]
+        async fn non_enumerable_authorizer_answers_reachability_with_no_grants() {
+            let authorizer: Arc<dyn RepositoryAuthorizer> = Arc::new(PolicyOnly(true));
+            let grants = authorizer.granted_access(None, repository()).await.unwrap();
+            assert_eq!(grants, None);
+        }
+
+        /// Denials flatten to the uniform status whichever path produced
+        /// them, so an unauthorized caller learns nothing from the reason.
+        #[tokio::test]
+        async fn denials_flatten_to_the_uniform_status() {
+            let non_enumerable: Arc<dyn RepositoryAuthorizer> = Arc::new(PolicyOnly(false));
+            let err = non_enumerable
+                .granted_access(None, repository())
+                .await
+                .unwrap_err();
+            assert_eq!(err.code(), no_repository_access_status().code());
+            assert_eq!(err.message(), no_repository_access_status().message());
+
+            let claims = AuthorizationToken {
+                resources: Some(vec![crate::auth::jwt::ResourcePermission {
+                    resource_id: "urc-somewhere-else".to_string(),
+                    permission: vec![],
+                }]),
+                ..Default::default()
+            };
+            let token = VerifiedToken {
+                raw: "raw.jwt",
+                claims: &claims,
+            };
+            let enumerable: Arc<dyn RepositoryAuthorizer> = Arc::new(AuthClientAuthorizer::new(
+                "https://auth.invalid".to_string(),
+            ));
+            let err = enumerable
+                .granted_access(Some(&token), repository())
+                .await
+                .unwrap_err();
+            assert_eq!(err.message(), no_repository_access_status().message());
+        }
+    }
+
+    mod action_access {
+        use super::*;
+
+        struct ReadPolicy;
+
+        #[async_trait]
+        impl RepositoryAuthorizer for ReadPolicy {
+            async fn check_repository_access(
+                &self,
+                _token: Option<&VerifiedToken<'_>>,
+                _repository_id: RepositoryId,
+                action: Option<&str>,
+            ) -> Result<(), Status> {
+                if action == Some("read") { Ok(()) } else { Err(Status::permission_denied("denied")) }
+            }
+        }
+
+        #[tokio::test]
+        async fn policy_actions_and_expiry_are_enforced() {
+            let authorizer: Arc<dyn RepositoryAuthorizer> = Arc::new(ReadPolicy);
+            let repository = RepositoryId::default();
+            let mut claims = AuthorizationToken { expires: u64::MAX, ..Default::default() };
+            let token = VerifiedToken { raw: "token", claims: &claims };
+            assert!(authorizer.granted_action_access(Some(&token), repository, "read").await.is_ok());
+            assert!(authorizer.granted_action_access(Some(&token), repository, "write").await.is_err());
+            claims.expires = 1;
+            let token = VerifiedToken { raw: "token", claims: &claims };
+            assert!(authorizer.granted_action_access(Some(&token), repository, "read").await.is_err());
+        }
+
+        #[tokio::test]
+        async fn enumerated_actions_preserve_repository_scope() {
+            let authorizer: Arc<dyn RepositoryAuthorizer> = Arc::new(AuthClientAuthorizer::new("https://auth.invalid".into()));
+            let repository = RepositoryId::default();
+            let mut claims = AuthorizationToken {
+                expires: u64::MAX,
+                resources: Some(vec![crate::auth::jwt::ResourcePermission {
+                    resource_id: format!("urc-{repository}"), permission: vec!["read".into()],
+                }]),
+                ..Default::default()
+            };
+            let token = VerifiedToken { raw: "token", claims: &claims };
+            assert!(authorizer.granted_action_access(Some(&token), repository, "read").await.is_ok());
+            assert!(authorizer.granted_action_access(Some(&token), repository, "write").await.is_err());
+            claims.resources.as_mut().unwrap()[0].resource_id = "urc-elsewhere".into();
+            let token = VerifiedToken { raw: "token", claims: &claims };
+            assert!(authorizer.granted_action_access(Some(&token), repository, "read").await.is_err());
         }
     }
 

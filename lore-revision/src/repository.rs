@@ -1104,6 +1104,10 @@ impl RepositoryContext {
     /// paths the filesystem, the filter and the modified-time keys answer for. A path within
     /// the mounted tree is derived from its node where one is called for, by
     /// [`State::node_path`](crate::state::State::node_path).
+    ///
+    /// The filter is carried over as the same handle, not rebuilt. A diff tells one view from two
+    /// by pointer identity on it, so a fresh handle holding the same rules would leave every diff
+    /// across the mount doing two-view work for a view that has not changed.
     pub async fn to_link_context(&self, id: RepositoryId) -> Arc<Self> {
         let remote = self.remote().await;
         let remote = if let Ok(remote) = remote {
@@ -1164,6 +1168,16 @@ impl RepositoryContext {
         }
     }
 
+    /// This context reading the same repository through `filter`, inheriting everything else as
+    /// the same handles, the connection state cell included.
+    ///
+    /// The write token travels, as it does through every other builder here. Writes deep in a read
+    /// path are gated on it and skip themselves without one — chiefly
+    /// [`state::file_modified_against_node`](crate::state::file_modified_against_node), which
+    /// records the modified time of a file a hash check just established as unmodified — so a
+    /// context without one leaves every later pass to pay the hash again. Sharing grants no
+    /// authority the caller does not already hold: the guard is the one `self` holds, and it is
+    /// released once every sibling drops.
     pub fn to_filter_context(&self, filter: Arc<Filter>) -> Self {
         RepositoryContext {
             link_read: self.link_read.clone(),
@@ -1178,7 +1192,7 @@ impl RepositoryContext {
             settings: self.settings.clone(),
             is_link: self.is_link,
             is_layer: self.is_layer,
-            write_token: None,
+            write_token: self.write_token.as_ref().map(|t| t.share()),
             repo_lock: self.repo_lock.clone(),
             session_pool: Default::default(),
             lazy_session: Default::default(),
@@ -2231,7 +2245,7 @@ pub async fn load_and_connect_with_token(
         (immutable_store, mutable_store as Arc<dyn MutableStore>)
     };
 
-    let filter = load_filter(path).unwrap_or_default();
+    let filter = load_filter(path)?;
 
     // Resolve the remote eagerly only when we need it for the mutable store upgrade.
     // Otherwise keep it pending so local-only commands never block on the connect.
@@ -2661,7 +2675,12 @@ pub async fn create_local(
     Ok(repository)
 }
 
-pub fn load_filter(root_path: &Path) -> Option<Arc<filter::Filter>> {
+/// Loads the ignore and view filters for the repository rooted at `root_path`.
+///
+/// A filter file that cannot be understood fails the load rather than yielding
+/// an empty filter: an empty one excludes nothing, so the caller would go on to
+/// walk and stage everything the file meant to keep out.
+pub fn load_filter(root_path: &Path) -> Result<Arc<filter::Filter>, RepositoryError> {
     let mut ignore_path = root_path.join(DOT_LOREIGNORE);
 
     // Both formats use .loreignore as the primary ignore file; fall back to
@@ -2673,13 +2692,10 @@ pub fn load_filter(root_path: &Path) -> Option<Arc<filter::Filter>> {
         }
     }
 
-    let view_path = get_dot_lore_path(root_path).ok()?.join(VIEW_FILTER);
-
-    if let Ok(filter) = filter::load(&ignore_path, &view_path) {
-        Some(Arc::new(filter))
-    } else {
-        None
-    }
+    let view_path = get_dot_lore_path(root_path)?.join(VIEW_FILTER);
+    let filter = filter::load(&ignore_path, &view_path)
+        .forward::<RepositoryError>("Failed to load repository filter")?;
+    Ok(Arc::new(filter))
 }
 
 fn branch_switch_create_recurse(
@@ -3141,7 +3157,7 @@ pub async fn branch_switch(
         if global.force() {
             let _ = crate::instance::delete_staged_anchor(&repository).await;
         } else {
-            state::rebase_staged_anchor(repository.clone(), branch_signature)
+            state::rebase_staged_anchor(repository.clone(), branch_signature, false)
                 .await
                 .forward::<RepositoryError>("Failed to rebase staged anchor")?;
         }
@@ -3406,6 +3422,7 @@ async fn layer_branch_switch(
             };
 
             if let Err(err) = Box::pin(layer::sync(
+                layer_repository.clone(),
                 layer_repository,
                 layer_current,
                 layer_target,

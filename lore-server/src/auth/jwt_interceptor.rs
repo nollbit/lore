@@ -14,7 +14,7 @@ use crate::authnz::repository_authorizer::RawToken;
 
 fn add_auth_fields_to_current_span(auth: &AuthorizationToken) {
     let span = Span::current();
-    span.record(USER_ID, auth.user_id.clone());
+    span.record(USER_ID, auth.identity().to_string());
 }
 
 /// Resolve the bearer token to an [`AuthorizationToken`]. The cached signing key serves the
@@ -44,15 +44,19 @@ fn authorize(verifier: &JwtVerifier, token: &str) -> Result<AuthorizationToken, 
 /// Authentication only: verifies the signature, parses the bearer token claims, and hands
 /// the verified halves to the handler as extensions ([`RawToken`] for the raw token
 /// string, and [`AuthorizationToken`] for the parsed claims).
+///
+/// With no verifier (no `[server.auth]`), every request passes through untouched: no
+/// bearer token is required, one that is present is not read, and no extension is
+/// inserted.
 #[derive(Clone)]
 pub struct JWTInterceptor {
-    jwt_verifier: JwtVerifier,
+    jwt_verifier: Option<JwtVerifier>,
 }
 
 impl JWTInterceptor {
-    pub fn new(jwt_verifier: &JwtVerifier) -> Self {
+    pub fn new(jwt_verifier: Option<&JwtVerifier>) -> Self {
         Self {
-            jwt_verifier: jwt_verifier.clone(),
+            jwt_verifier: jwt_verifier.cloned(),
         }
     }
 }
@@ -62,11 +66,15 @@ impl Interceptor for JWTInterceptor {
         &mut self,
         mut request: tonic::Request<()>,
     ) -> Result<tonic::Request<()>, tonic::Status> {
+        let Some(jwt_verifier) = &self.jwt_verifier else {
+            return Ok(request);
+        };
+
         let token = extract_bearer_token(request.metadata()).ok_or(
             tonic::Status::unauthenticated("authorization header required"),
         )?;
 
-        let authorization = authorize(&self.jwt_verifier, &token)?;
+        let authorization = authorize(jwt_verifier, &token)?;
         add_auth_fields_to_current_span(&authorization);
 
         request.extensions_mut().insert(RawToken(token));
@@ -110,6 +118,7 @@ mod tests {
     use super::*;
     use crate::auth::jwk::JWKService;
     use crate::auth::jwk::JWKServiceError;
+    use crate::auth::jwt::DEFAULT_IDENTITY_CLAIM;
 
     const SIGNING_SECRET: &str = "the-secret";
 
@@ -140,11 +149,16 @@ mod tests {
     }
 
     fn interceptor() -> JWTInterceptor {
-        JWTInterceptor::new(&JwtVerifier {
+        interceptor_with_identity_claim(DEFAULT_IDENTITY_CLAIM)
+    }
+
+    fn interceptor_with_identity_claim(identity_claim: &str) -> JWTInterceptor {
+        JWTInterceptor::new(Some(&JwtVerifier {
             jwk_service: Arc::new(CachedJWKService),
             jwt_issuer: None,
             jwt_audience: Some(vec!["Lore".to_string()]),
-        })
+            identity_claim: identity_claim.to_string(),
+        }))
     }
 
     fn encode_token(claims: &serde_json::Value) -> String {
@@ -214,6 +228,44 @@ mod tests {
         assert!(request.extensions().get::<RawToken>().is_some());
     }
 
+    /// The identity every handler records and compares comes out of the extensions the
+    /// interceptor inserts, so this is where `identity_claim` takes effect end to end.
+    #[test]
+    fn the_identity_claim_decides_what_handlers_read_as_the_user_id() {
+        let token = encode_token(&json!({
+            "iss": "the issuer",
+            "sub": "f7d3a1c2-0000-0000-0000-000000000000",
+            "preferred_username": "alice",
+            "aud": "Lore",
+            "iat": 1,
+            "exp": SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .checked_add(Duration::from_secs(60))
+                .unwrap()
+                .as_secs(),
+        }));
+
+        let request = interceptor()
+            .call(request_with(&token, None))
+            .expect("verifies");
+        assert_eq!(
+            crate::grpc::get_user_id(request.extensions()),
+            "f7d3a1c2-0000-0000-0000-000000000000"
+        );
+
+        let request = interceptor_with_identity_claim("preferred_username")
+            .call(request_with(&token, None))
+            .expect("verifies");
+        assert_eq!(crate::grpc::get_user_id(request.extensions()), "alice");
+
+        let status = interceptor_with_identity_claim("oid")
+            .call(request_with(&token, None))
+            .expect_err("no `oid` claim to attribute the caller by");
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        assert_eq!(status.message(), "Not allowed");
+    }
+
     /// A request carrying no partition metadata needs no claim naming the zero partition
     /// id: naming no partition means no partition decision, not a decision about
     /// partition zero.
@@ -230,6 +282,27 @@ mod tests {
             .call(tonic::Request::new(()))
             .expect_err("no bearer token");
         assert_eq!(status.code(), tonic::Code::Unauthenticated);
+    }
+
+    /// The no-auth server's registration path: with no verifier the interceptor stands
+    /// aside. A request without a token passes, and one carrying a token that would
+    /// never verify passes too, with nothing inserted for a handler to mistake for a
+    /// verified caller.
+    #[test]
+    fn without_a_verifier_every_request_passes_untouched() {
+        let mut interceptor = JWTInterceptor::new(None);
+
+        let request = interceptor
+            .call(tonic::Request::new(()))
+            .expect("no verifier means no token is required");
+        assert!(request.extensions().get::<AuthorizationToken>().is_none());
+        assert!(request.extensions().get::<RawToken>().is_none());
+
+        let request = interceptor
+            .call(request_with("not.a.jwt", None))
+            .expect("no verifier means the token is not read");
+        assert!(request.extensions().get::<AuthorizationToken>().is_none());
+        assert!(request.extensions().get::<RawToken>().is_none());
     }
 
     /// Authentication still lives here: a token that fails on its own claims is refused

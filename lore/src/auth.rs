@@ -71,7 +71,7 @@ impl EventError for AuthStoreError {
     }
 }
 
-/// Arguments for resolving user IDs to display names via the remote auth service.
+/// Arguments for resolving user IDs to display names via the remote user service.
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, LoreArgs)]
 #[handler(resolve_user_info_local)]
@@ -80,9 +80,9 @@ pub struct LoreAuthUserInfoArgs {
     pub user_ids: LoreArray<LoreString>,
 }
 
-/// Resolves user IDs to display names using the remote authentication service.
+/// Resolves user IDs to display names using the remote user service.
 ///
-/// Requires an authenticated connection. Queries the authentication service to
+/// Requires an authenticated connection. Queries the remote user service to
 /// resolve the provided user IDs to their display names.
 ///
 /// When `user_ids` is empty, falls back to [`local_user_info`] to return the
@@ -144,7 +144,7 @@ async fn resolve_user_info_impl(
     repository: Arc<RepositoryContext>,
     ids: LoreArray<LoreString>,
 ) -> Result<(), UserInfoError> {
-    lore_revision::auth::userinfo::resolve_user_info(repository, ids).await
+    lore_revision::auth::userinfo::resolve_user_info_boxed(repository, ids).await
 }
 
 /// What the repository at a given path says about its remote.
@@ -302,7 +302,9 @@ async fn login_with_token_impl(
     token_type: &str,
     auth_url: Option<&str>,
 ) -> Result<(), LoginError> {
-    match lore_revision::auth::login::with_token(remote_url, token, token_type, auth_url).await {
+    match lore_revision::auth::login::with_token_boxed(remote_url, token, token_type, auth_url)
+        .await
+    {
         Ok(user_info) => {
             send_user_info(user_info);
             Ok(())
@@ -640,7 +642,7 @@ pub struct LoreAuthLocalUserInfoArgs {
 /// exchange when no valid cached token exists.
 ///
 /// For remote resolution of user IDs with proper authorization, use
-/// [`resolve_user_info`] which queries the remote authentication service.
+/// [`resolve_user_info`] which queries the remote user service.
 ///
 /// # Events
 ///
@@ -787,7 +789,8 @@ async fn emit_local_user_info(args: &LoreAuthLocalUserInfoArgs) -> Result<(), Au
     }
 
     let resolved =
-        lore_revision::auth::userinfo::resolve_local_user_info(&auth_endpoint, &user_ids).await;
+        lore_revision::auth::userinfo::resolve_local_user_info_boxed(&auth_endpoint, &user_ids)
+            .await;
 
     for entry in &resolved {
         if include_identity_token && let Some(user_info) = &entry.local_user_info {
