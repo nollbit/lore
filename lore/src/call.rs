@@ -78,23 +78,20 @@ where
             log_command_info(&caller, &args);
             let time_start = Instant::now();
 
-            let detail;
-            let mut weak_repository = None;
-            match repository::load_and_connect_with_token(
-                &repository_path,
-                RepositoryAccess::ReadOnly,
-                None,
-            )
-            .await
-            {
-                Ok(repository) => {
-                    detail = LoreErrorDetail::from_result(command(repository.clone(), args).await);
-                    weak_repository = Some(post_command_cleanup(repository).await);
-                }
-                Err(err) => {
-                    detail = LoreErrorDetail::from_error(&err);
-                }
-            }
+            let (detail, weak_repository) = 'call: {
+                let repository = match repository::load_and_connect_with_token(
+                    &repository_path,
+                    RepositoryAccess::ReadOnly,
+                    None,
+                )
+                .await
+                {
+                    Ok(repository) => repository,
+                    Err(err) => break 'call (LoreErrorDetail::from_error(&err), None),
+                };
+                let detail = LoreErrorDetail::from_result(command(repository.clone(), args).await);
+                (detail, Some(post_command_cleanup(repository).await))
+            };
 
             check_no_lingering_repository(weak_repository);
 
@@ -129,33 +126,29 @@ where
         Err(status) => return status,
     };
 
-    let token = RepositoryWriteToken::acquire(&repository_path).await;
-    let context_token = token.share();
-
     LORE_CONTEXT
         .scope(execution, async move {
+            let token = RepositoryWriteToken::acquire(&repository_path).await;
+            let context_token = token.share();
+
             log_command_info(&caller, &args);
             let time_start = Instant::now();
 
-            let detail;
-            let mut weak_repository = None;
-            match repository::load_and_connect_with_token(
-                &repository_path,
-                RepositoryAccess::ReadWrite,
-                Some(context_token),
-            )
-            .await
-            {
-                Ok(repository) => {
-                    detail = LoreErrorDetail::from_result(
-                        command(repository.clone(), token, args).await,
-                    );
-                    weak_repository = Some(post_command_cleanup(repository).await);
-                }
-                Err(err) => {
-                    detail = LoreErrorDetail::from_error(&err);
-                }
-            }
+            let (detail, weak_repository) = 'call: {
+                let repository = match repository::load_and_connect_with_token(
+                    &repository_path,
+                    RepositoryAccess::ReadWrite,
+                    Some(context_token),
+                )
+                .await
+                {
+                    Ok(repository) => repository,
+                    Err(err) => break 'call (LoreErrorDetail::from_error(&err), None),
+                };
+                let detail =
+                    LoreErrorDetail::from_result(command(repository.clone(), token, args).await);
+                (detail, Some(post_command_cleanup(repository).await))
+            };
 
             check_no_lingering_repository(weak_repository);
 
@@ -191,23 +184,20 @@ where
             log_command_info(&caller, &args);
             let time_start = Instant::now();
 
-            let detail;
-            let mut weak_repository = None;
-            match repository::load_and_connect_with_token(
-                &repository_path,
-                RepositoryAccess::NoStore,
-                None,
-            )
-            .await
-            {
-                Ok(repository) => {
-                    detail = LoreErrorDetail::from_result(command(repository.clone(), args).await);
-                    weak_repository = Some(post_command_cleanup(repository).await);
-                }
-                Err(err) => {
-                    detail = LoreErrorDetail::from_error(&err);
-                }
-            }
+            let (detail, weak_repository) = 'call: {
+                let repository = match repository::load_and_connect_with_token(
+                    &repository_path,
+                    RepositoryAccess::NoStore,
+                    None,
+                )
+                .await
+                {
+                    Ok(repository) => repository,
+                    Err(err) => break 'call (LoreErrorDetail::from_error(&err), None),
+                };
+                let detail = LoreErrorDetail::from_result(command(repository.clone(), args).await);
+                (detail, Some(post_command_cleanup(repository).await))
+            };
 
             check_no_lingering_repository(weak_repository);
 
@@ -217,20 +207,27 @@ where
         .await
 }
 
+/// Resolves `globals.repository_path` against the call's working directory and records the result
+/// in `globals`. Left as given when it cannot be resolved.
+pub(crate) fn resolve_repository_path(globals: &mut LoreGlobalArgs) -> PathBuf {
+    match util::path::make_absolute_from(
+        globals.repository_path.as_str(),
+        globals.working_directory().map(Path::new),
+    ) {
+        Ok(path) => {
+            globals.repository_path = path.display().to_string().into();
+            path
+        }
+        Err(_) => PathBuf::from(globals.repository_path.as_str()),
+    }
+}
+
 /// On `Err`, the error has already been dispatched to the callback.
 async fn prepare_repository_call(
     mut globals: LoreGlobalArgs,
     callback: LoreEventCallback,
 ) -> Result<(PathBuf, Arc<ExecutionContext>), i32> {
-    let repository_path = if let Ok(path) = util::path::make_absolute_from(
-        globals.repository_path.as_str(),
-        globals.working_directory().map(Path::new),
-    ) {
-        globals.repository_path = path.display().to_string().into();
-        path
-    } else {
-        PathBuf::from(globals.repository_path.as_str())
-    };
+    let repository_path = resolve_repository_path(&mut globals);
 
     let execution = setup_execution(globals, callback);
 

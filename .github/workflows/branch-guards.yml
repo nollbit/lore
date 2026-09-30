@@ -1,12 +1,18 @@
 name: Branch guard validation
 on:
   push:
-    branches: [server-branch-protection, repository-acl, upstream-integration]
+    branches: [server-branch-protection, repository-acl, upstream-integration, 'updates/**']
 permissions:
   contents: read
 jobs:
   server:
-    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04-arm, arch: arm64}
+          - {runner: ubuntu-latest, arch: amd64}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -19,9 +25,30 @@ jobs:
       - name: Test authentication renewal
         run: cargo test --locked -p lore-transport --test refresh
       - name: Build server
-        run: cargo build --locked --release -p lore-server --bin loreserver
+        run: cargo build --locked --release -p lore-server --bin loreserver -p lore-client --bin lore
       - uses: actions/upload-artifact@v4
         with:
-          name: loreserver-linux-arm64
-          path: target/release/loreserver
+          name: lore-linux-${{ matrix.arch }}
+          path: |
+            target/release/loreserver
+            target/release/lore
+          retention-days: 7
+
+  client:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: brew install protobuf
+      - name: Install Rust
+        run: rustup toolchain install 1.98.1 --profile minimal && rustup override set 1.98.1
+      - name: Test authentication renewal
+        run: cargo test --locked -p lore-transport --test refresh
+      - name: Build client
+        run: cargo build --locked --release -p lore-client --bin lore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lore-macos-arm64
+          path: target/release/lore
           retention-days: 7

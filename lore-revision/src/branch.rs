@@ -2650,9 +2650,9 @@ pub async fn diff3_with_source_cap(
         target: target_revision,
     };
 
-    let (inner_tx, mut inner_rx) = mpsc::channel::<Result<DiffItem, StateError>>(256);
-    let mut driver = std::pin::pin!(revision::diff3_with_source_cap(
-        repository.clone(),
+    let (inner_tx, inner_rx) = mpsc::channel::<Result<DiffItem, StateError>>(256);
+    let driver = std::pin::pin!(revision::diff3_with_source_cap(
+        repository,
         base_revision,
         source_revision,
         target_revision,
@@ -2663,28 +2663,50 @@ pub async fn diff3_with_source_cap(
         graft_view,
         inner_tx,
     ));
-    loop {
-        tokio::select! {
-            biased;
-            item = inner_rx.recv() => if let Some(item) = item {
-                let item = item.forward::<BranchError>("Failed to calculate branch diff")?;
-                emit_diff_item_with_auto_resolve(item, auto_resolve, &tx).await?;
-            } else {
-                (&mut driver).await.forward::<BranchError>("Failed to calculate branch diff")?;
-                break;
-            },
-            result = &mut driver => {
-                result.forward::<BranchError>("Failed to calculate branch diff")?;
-                while let Some(item) = inner_rx.recv().await {
-                    let item = item.forward::<BranchError>("Failed to calculate branch diff")?;
-                    emit_diff_item_with_auto_resolve(item, auto_resolve, &tx).await?;
-                }
-                break;
-            }
-        }
-    }
+    relay_revision_diff3(driver, inner_rx, auto_resolve, &tx).await?;
 
     Ok(summary)
+}
+
+/// Relays the items of the three-way diff `driver` makes through
+/// [`emit_diff_item_with_auto_resolve`].
+///
+/// A function of its own because its items live across several awaits: kept in
+/// [`diff3_with_source_cap`] they would take space in its future while the base
+/// is resolved as well. The caller pins the diff, which takes the caller's
+/// arguments rather than a copy of them. Each item is relayed after the
+/// `select!` that received it, and a diff that outlives the channel is awaited
+/// after the loop, so no item is held twice.
+async fn relay_revision_diff3(
+    mut driver: Pin<&mut impl Future<Output = Result<Diff3Summary, StateError>>>,
+    mut inner_rx: mpsc::Receiver<Result<DiffItem, StateError>>,
+    auto_resolve: bool,
+    tx: &mpsc::Sender<Result<DiffItem, BranchError>>,
+) -> Result<(), BranchError> {
+    let mut driven = false;
+    loop {
+        let item = tokio::select! {
+            biased;
+            item = inner_rx.recv() => match item {
+                Some(item) => item,
+                None => break,
+            },
+            result = &mut driver, if !driven => {
+                result.forward::<BranchError>("Failed to calculate branch diff")?;
+                driven = true;
+                continue;
+            }
+        };
+        let item = item.forward::<BranchError>("Failed to calculate branch diff")?;
+        emit_diff_item_with_auto_resolve(item, auto_resolve, tx).await?;
+    }
+    if !driven {
+        driver
+            .await
+            .forward::<BranchError>("Failed to calculate branch diff")?;
+    }
+
+    Ok(())
 }
 
 /// Per-`DiffItem` step of `branch::diff3`'s auto-resolve drain. Kept
@@ -2692,30 +2714,31 @@ pub async fn diff3_with_source_cap(
 /// streaming pipeline's memory bound — each in-flight conflict pins
 /// two `NodeChange`s and three open temp files until the text-merge
 /// completes.
-async fn emit_diff_item_with_auto_resolve(
-    item: DiffItem,
+///
+/// The text merge is boxed. Only a conflict with auto-resolve on reaches it,
+/// and inline it would make the step as large as the merge for every item.
+///
+/// Not an `async fn`, which would hold a second copy of its arguments. A
+/// resolved conflict replaces the item in place, so the item is held once.
+#[allow(clippy::manual_async_fn)]
+fn emit_diff_item_with_auto_resolve(
+    mut item: DiffItem,
     auto_resolve: bool,
     tx: &mpsc::Sender<Result<DiffItem, BranchError>>,
-) -> Result<(), BranchError> {
-    match item {
-        DiffItem::Change(c) => tx
-            .send(Ok(DiffItem::Change(c)))
-            .await
-            .map_err(|_send_err| Internal::msg("diff3 channel closed").into()),
-        DiffItem::Conflict(pair) => {
-            let (change_from, change_to) = *pair;
-            if auto_resolve
-                && let Some(resolved) = try_auto_resolve_conflict(&change_from, &change_to).await?
-            {
-                return tx
-                    .send(Ok(DiffItem::Change(resolved)))
-                    .await
-                    .map_err(|_send_err| Internal::msg("diff3 channel closed").into());
-            }
-            tx.send(Ok(DiffItem::Conflict(Box::new((change_from, change_to)))))
-                .await
-                .map_err(|_send_err| Internal::msg("diff3 channel closed").into())
+) -> impl Future<Output = Result<(), BranchError>> + '_ {
+    async move {
+        if auto_resolve
+            && let DiffItem::Conflict(pair) = &item
+            && let Some(resolved) = Box::pin(try_auto_resolve_conflict(&pair.0, &pair.1)).await?
+        {
+            item = DiffItem::Change(resolved);
         }
+        let permit = tx
+            .reserve()
+            .await
+            .map_err(|_closed| Internal::msg("diff3 channel closed"))?;
+        permit.send(Ok(item));
+        Ok(())
     }
 }
 
@@ -3008,7 +3031,7 @@ pub async fn resolve_diff3_base(
             vec![]
         };
 
-        let Some(common_ancestor) = Box::pin(find_common_ancestor_from_branch_points(
+        let Some(common_ancestor) = find_common_ancestor_from_branch_points(
             repository.clone(),
             source_branch,
             source_revision,
@@ -3016,7 +3039,7 @@ pub async fn resolve_diff3_base(
             target_branch,
             target_revision,
             &target_stack,
-        ))
+        )
         .await?
         else {
             return Err(InvalidArguments {
@@ -4136,10 +4159,7 @@ mod tests {
         let token = repository
             .try_write_token()
             .expect("a null context carries a write token");
-        // Behind an `Arc`, as every other holder of a `State` has it: a bare one
-        // is held across the serialize await, which puts the whole of it in this
-        // future rather than a pointer to it.
-        let state = Arc::new(State::new());
+        let state = State::new();
         state.set_parent_self(parent);
         state.set_revision_number(revision_number);
         state
@@ -4160,7 +4180,7 @@ mod tests {
         let token = repository
             .try_write_token()
             .expect("a null context carries a write token");
-        let state = Arc::new(State::new());
+        let state = State::new();
         state.set_parent_self(parent);
         state.set_revision_number(revision_number);
         state.set_metadata_hash(revision(distinguisher));
@@ -4180,7 +4200,7 @@ mod tests {
         let token = repository
             .try_write_token()
             .expect("a null context carries a write token");
-        let state = Arc::new(State::new());
+        let state = State::new();
         state.set_parent_self(parent_self);
         state.set_parent_other(parent_other);
         state.set_revision_number(revision_number);
@@ -4911,7 +4931,7 @@ mod tests {
     async fn diff_change_carries_the_move_source_path() {
         Box::pin(with_execution(async {
             let repository = null_repository().await;
-            let state = Arc::new(State::new());
+            let state = State::new();
             let change = node_change(
                 &repository,
                 &state,
@@ -4935,7 +4955,7 @@ mod tests {
     async fn diff_change_without_a_move_reports_no_source_path() {
         Box::pin(with_execution(async {
             let repository = null_repository().await;
-            let state = Arc::new(State::new());
+            let state = State::new();
             let change = node_change(
                 &repository,
                 &state,
@@ -4959,7 +4979,7 @@ mod tests {
     async fn diff_change_marks_a_moved_directory_on_both_paths() {
         Box::pin(with_execution(async {
             let repository = null_repository().await;
-            let state = Arc::new(State::new());
+            let state = State::new();
             let change = node_change(
                 &repository,
                 &state,
@@ -4973,6 +4993,87 @@ mod tests {
 
             assert_eq!(data.path.as_str(), "new/");
             assert_eq!(data.from_path.as_str(), "old/");
+        }))
+        .await;
+    }
+
+    /// Every three-way diff item passes through the auto-resolve step and few reach the text
+    /// merge, so the step does not hold the merge.
+    #[tokio::test]
+    async fn the_auto_resolve_step_does_not_hold_the_text_merge() {
+        Box::pin(with_execution(async {
+            let repository = null_repository().await;
+            let state = State::new();
+            let change = node_change(
+                &repository,
+                &state,
+                FileAction::Add,
+                NodeFlags::File,
+                "file.txt",
+                None,
+            );
+            let (tx, _rx) = mpsc::channel(1);
+
+            let merge = try_auto_resolve_conflict(&change, &change);
+            let step =
+                emit_diff_item_with_auto_resolve(DiffItem::Change(change.clone()), true, &tx);
+
+            assert!(
+                size_of_val(&step) < size_of_val(&merge),
+                "the step holds {} bytes, the merge {}",
+                size_of_val(&step),
+                size_of_val(&merge)
+            );
+        }))
+        .await;
+    }
+
+    /// A resolved conflict replaces the item in place, so the auto-resolve step holds its item
+    /// once, and the relay holds no item beside the step.
+    #[tokio::test]
+    async fn each_relayed_diff_item_is_held_once() {
+        Box::pin(with_execution(async {
+            let repository = null_repository().await;
+            let state = State::new();
+            let change = node_change(
+                &repository,
+                &state,
+                FileAction::Add,
+                NodeFlags::File,
+                "file.txt",
+                None,
+            );
+            let (tx, _rx) = mpsc::channel(1);
+            let (inner_tx, inner_rx) = mpsc::channel(1);
+            let hash = Hash::default();
+
+            let step = emit_diff_item_with_auto_resolve(DiffItem::Change(change), true, &tx);
+            let driver = std::pin::pin!(revision::diff3_with_source_cap(
+                repository.clone(),
+                hash,
+                hash,
+                hash,
+                None,
+                false,
+                None,
+                None,
+                None,
+                inner_tx,
+            ));
+            let relay = relay_revision_diff3(driver, inner_rx, true, &tx);
+
+            assert!(
+                size_of_val(&step) < 2 * size_of::<DiffItem>(),
+                "the step holds {} bytes for an item of {}",
+                size_of_val(&step),
+                size_of::<DiffItem>()
+            );
+            assert!(
+                size_of_val(&relay) < size_of_val(&step) + size_of::<DiffItem>(),
+                "the relay holds {} bytes, its step {}",
+                size_of_val(&relay),
+                size_of_val(&step)
+            );
         }))
         .await;
     }

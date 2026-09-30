@@ -18,16 +18,22 @@ use crate::state::StateError;
 /// its own failure, reported where it ends rather than in place of a change.
 pub type ChangeSender = mpsc::Sender<NodeChange>;
 
-/// Emits one change to the caller reading them.
+/// Emits the change `build` makes to the caller reading them, once the channel has room for it.
 ///
-/// A closed channel is a caller that has stopped listening, which the walk learns of here: the
-/// error unwinds it, and a caller that closed deliberately already has its answer and discards
-/// that verdict.
-pub(crate) async fn emit(changes: &ChangeSender, change: NodeChange) -> Result<(), StateError> {
-    changes
-        .send(change)
+/// `build` runs after the wait for room, so a walk waiting to emit holds what it builds the
+/// change from rather than the change. A closed channel is a caller that has stopped listening,
+/// which the walk learns of here: the error unwinds it, and a caller that closed deliberately
+/// already has its answer and discards that verdict.
+pub(crate) async fn emit(
+    changes: &ChangeSender,
+    build: impl FnOnce() -> NodeChange,
+) -> Result<(), StateError> {
+    let permit = changes
+        .reserve()
         .await
-        .map_err(|_closed| StateError::internal("Diff receiver dropped"))
+        .map_err(|_closed| StateError::internal("Diff receiver dropped"))?;
+    permit.send(build());
+    Ok(())
 }
 
 /// How many changes a diff may run ahead of the caller reading them, for a caller with no depth
@@ -134,8 +140,8 @@ impl<Summary: Default + Send + 'static> ChangeStream<Summary> {
     /// Either way the walk has unwound when this answers, so what it captured is released before
     /// the caller acts on the answer.
     pub async fn any(mut self, wanted: impl Fn(&NodeChange) -> bool) -> Result<bool, StateError> {
-        while let Some(change) = self.next().await {
-            if wanted(&change) {
+        while let Some(found) = self.next().await.map(|change| wanted(&change)) {
+            if found {
                 self.abandon().await;
                 return Ok(true);
             }
@@ -234,7 +240,7 @@ mod tests {
             mutable_store,
         )));
         let side = NodeChangeState {
-            mapping: NodeMapping::root(repository, Arc::new(State::new())),
+            mapping: NodeMapping::root(repository, State::new()),
             observed: None,
             flags: NodeFlags::NoFlags,
             address: Address::default(),
@@ -266,11 +272,11 @@ mod tests {
 
                 let stream = ChangeStream::spawn(async move |changes| {
                     let _guard = guard;
-                    emit(&changes, change.clone()).await?;
+                    emit(&changes, || change.clone()).await?;
                     changes.closed().await;
                     decided.send(()).expect("the test reads the decision");
                     released_by_test.await.expect("the test releases the walk");
-                    emit(&changes, change).await?;
+                    emit(&changes, || change).await?;
                     Ok(())
                 });
 
@@ -303,6 +309,19 @@ mod tests {
             .await;
     }
 
+    /// `any` reduces each change to its verdict as it arrives, so it holds no change while the walk
+    /// it cut short unwinds.
+    #[test]
+    fn any_holds_no_change_while_the_walk_unwinds() {
+        let answer = ChangeStream::<()>::nothing().any(|_change| true);
+
+        assert!(
+            size_of_val(&answer) < size_of::<NodeChange>(),
+            "any holds {} bytes",
+            size_of_val(&answer)
+        );
+    }
+
     /// A walk offering nothing the caller accepts is read to its end rather than cut short, so
     /// `any` answers on what the walk reported and the walk has unwound by then either way.
     #[tokio::test]
@@ -314,7 +333,7 @@ mod tests {
 
                 let stream = ChangeStream::spawn(async move |changes| {
                     let _guard = guard;
-                    emit(&changes, change).await?;
+                    emit(&changes, || change).await?;
                     Ok(())
                 });
 

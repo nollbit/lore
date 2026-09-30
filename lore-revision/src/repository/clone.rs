@@ -40,10 +40,11 @@ use crate::event::EventError;
 use crate::filter;
 use crate::filter::FilterMode;
 use crate::filter::FilterStates;
-use crate::fs::filesystem_provider::FileInfo;
 use crate::fs::filesystem_provider::InstanceOperation;
 use crate::fs::filesystem_provider::InstanceOperationImpl;
 use crate::fs::filesystem_provider::create_empty_directory;
+use crate::fs::filesystem_provider::match_node_executable;
+use crate::fs::filesystem_provider::set_file_to_node;
 use crate::hash::hash_string_bytes;
 use crate::instance::InstanceId;
 use crate::interface::LoreArray;
@@ -449,8 +450,9 @@ impl BlockDiscoverDispatcher {
             Err(mpsc::error::TrySendError::Full(item)) => {
                 let dispatcher = Arc::clone(self);
                 lore_spawn!(async move {
-                    if tx.send(item).await.is_err() {
-                        dispatcher.item_complete();
+                    match tx.reserve().await {
+                        Ok(permit) => permit.send(item),
+                        Err(_closed) => dispatcher.item_complete(),
                     }
                 });
             }
@@ -587,19 +589,15 @@ async fn process_block_item(
                     .total_bytes
                     .fetch_add(node.size, Ordering::Relaxed);
 
-                if dispatcher
-                    .file_tx
-                    .send(CloneWorkItem {
-                        repository: dispatcher.repository.clone(),
-                        node,
-                        repository_path: node_path,
-                    })
-                    .await
-                    .is_err()
-                {
+                let Ok(permit) = dispatcher.file_tx.reserve().await else {
                     // Receiver dropped, consumer encountered an error
                     return Err(CloneError::internal("Recursion task failed"));
-                }
+                };
+                permit.send(CloneWorkItem {
+                    repository: dispatcher.repository.clone(),
+                    node,
+                    repository_path: node_path,
+                });
             } else if node.is_link() {
                 if dispatcher.is_shutdown() {
                     dispatcher.item_complete();
@@ -716,18 +714,14 @@ async fn process_block_item_dependency(
             .total_bytes
             .fetch_add(node.size, Ordering::Relaxed);
 
-        if dispatcher
-            .file_tx
-            .send(CloneWorkItem {
-                repository: dispatcher.repository.clone(),
-                node,
-                repository_path: item.repository_path.clone(),
-            })
-            .await
-            .is_err()
-        {
+        let Ok(permit) = dispatcher.file_tx.reserve().await else {
             return Err(CloneError::internal("Recursion task failed"));
-        }
+        };
+        permit.send(CloneWorkItem {
+            repository: dispatcher.repository.clone(),
+            node,
+            repository_path: item.repository_path.clone(),
+        });
     }
 
     // Only load and follow dependencies when this item is marked to do so.
@@ -1000,6 +994,42 @@ pub async fn clone(
     };
 
     let (repository, prefetched_branch) = tokio::try_join!(local_init_fut, prefetch_branch_fut)?;
+
+    clone_into(
+        repository,
+        remote,
+        repository_metadata,
+        prefetched_branch,
+        path,
+        revision,
+        view,
+        layer,
+        options,
+        &mut repository_path_guard,
+    )
+    .await
+}
+
+/// Completes [`clone`] once the repository exists locally and its branch is fetched: applies the
+/// view, resolves the revision and layer, records the branch and materializes the tree.
+///
+/// A function of its own because its locals live across several awaits: kept in [`clone`] they
+/// would take space in its future while the repository is created as well.
+#[allow(clippy::too_many_arguments)]
+async fn clone_into(
+    repository: Arc<RepositoryContext>,
+    remote: Arc<lore_transport::Connection>,
+    repository_metadata: repository::RepositoryMetadata,
+    prefetched_branch: Option<branch::BranchStatus>,
+    path: &Path,
+    revision: Option<String>,
+    view: Option<&Path>,
+    layer: Option<CloneLayer>,
+    options: CloneOptions,
+    repository_path_guard: &mut RepositoryCloneGuard,
+) -> Result<(), CloneError> {
+    let context = execution_context();
+    let call = context.globals();
 
     let mut dot_directory_guard =
         RepositoryCloneGuard::new(repository.dot_dir_path()?, call.dry_run());
@@ -1734,27 +1764,6 @@ async fn ensure_parent_dir(
     Ok(())
 }
 
-/// Sets the executable bit at `path` to what `node` holds, where the filesystem reported
-/// a bit to compare against. A platform that reports none leaves the file alone.
-async fn match_node_executable(
-    operation: &Arc<InstanceOperationImpl>,
-    path: &RelativePath,
-    node: &Node,
-    file_info: &FileInfo,
-) -> Result<(), CloneError> {
-    let node_executable = node.mode & NodeFileMode::Executable == NodeFileMode::Executable;
-    if file_info
-        .executable()
-        .is_some_and(|observed| observed != node_executable)
-    {
-        operation
-            .make_executable(path, node_executable)
-            .await
-            .forward_with::<CloneError, _>(|| format!("Failed to clone file {path}"))?;
-    }
-    Ok(())
-}
-
 async fn clone_file(
     ctx: CloneContext,
     node: Node,
@@ -1799,7 +1808,8 @@ async fn clone_file(
         );
         if matches_node {
             // Existing file is identical, just use it
-            match_node_executable(&operation, &repository_path, &node, &file_info).await?;
+            match_node_executable::<CloneError>(&operation, &repository_path, &node, &file_info)
+                .await?;
 
             lore_trace!("Retain {}", repository_path);
             stats.complete.file_retain.fetch_add(1, Ordering::Relaxed);
@@ -1847,31 +1857,13 @@ async fn clone_file(
         // Discovery no longer pre-creates dirs; create per-file parent just-in-time via the cache.
         ensure_parent_dir(&repository_path, &operation, &stats).await?;
 
-        // `read_into_file` returns the file's metadata when its single-fragment
-        // path captures it on the open write handle; on that path we skip the
-        // post-write stat entirely. Multi-fragment and zero-size paths
-        // still need a separate metadata query.
-        let (fragment, captured_file_info) = operation
-            .set_file_to_immutable_store_contents(repository.clone(), &node, &repository_path)
-            .await
-            .forward_with::<CloneError, _>(|| format!("Failed to clone file {repository_path}"))?;
+        let (fragment, file_info) =
+            set_file_to_node::<CloneError>(&operation, repository.clone(), &node, &repository_path)
+                .await?;
         stats
             .complete
             .bytes_transferred
             .fetch_add(fragment.size_content, Ordering::Relaxed);
-
-        let file_info = if let Some(file_info) = captured_file_info {
-            file_info
-        } else {
-            operation
-                .file_info(&repository_path)
-                .await
-                .forward_with::<CloneError, _>(|| {
-                    format!("Failed to clone file {repository_path}")
-                })?
-        };
-
-        match_node_executable(&operation, &repository_path, &node, &file_info).await?;
 
         // Compute the (mtime_key, mtime) pair and return it; the caller
         // (`clone_execute`) collects pairs in a stack-local buffer and

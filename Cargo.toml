@@ -4,6 +4,7 @@ members = [
     "lore",
     "lore-aws",
     "lore-base",
+    "lore-capi",
     "lore-chaos-client",
     "lore-client",
     "lore-credential",
@@ -209,6 +210,11 @@ debug-assertions = false
 
 # Quinn sometimes debug asserts on something, silence it for now until we can investigate
 [profile.release.package.quinn]
+debug-assertions = false
+
+# Built with debug assertions, tokio boxes every spawned future over 2 KiB rather than over 16 KiB,
+# a second allocation per spawn that release-lto does not make.
+[profile.release.package.tokio]
 debug-assertions = false
 
 [patch.crates-io]

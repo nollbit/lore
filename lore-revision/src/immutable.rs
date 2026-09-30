@@ -363,14 +363,17 @@ pub async fn read_into_file(
 
 /// Store a raw fragment: delegates to [`lore_storage::store_fragment`] with
 /// an optional remote session for durable upload.
-pub async fn store_raw(
+///
+/// Returns [`store_raw_with_tracker`]'s future itself: a future of its own would hold the arguments
+/// again beside it.
+pub fn store_raw(
     repository: Arc<RepositoryContext>,
     address: Address,
     fragment: Fragment,
     buffer: Bytes,
     cache_local: bool,
     remote_write: bool,
-) -> Result<Address, ImmutableError> {
+) -> impl Future<Output = Result<Address, ImmutableError>> {
     store_raw_with_tracker(
         repository,
         address,
@@ -380,7 +383,6 @@ pub async fn store_raw(
         remote_write,
         None,
     )
-    .await
 }
 
 /// Tracker-aware variant of [`store_raw`]. When `tracker` is `Some`, the
@@ -424,13 +426,17 @@ pub async fn store_raw_with_tracker(
 // Write / write_from_file / hash_file -- delegate to lore-storage directly
 // ---------------------------------------------------------------------------
 
-pub async fn write(
+/// Write content to the immutable store, returning its address.
+///
+/// Returns [`write_with_tracker`]'s future itself: a future of its own would hold the arguments
+/// again beside it.
+pub fn write(
     repository: Arc<RepositoryContext>,
     context: Context,
     buffer: Bytes,
     flags: WriteOptions,
-) -> Result<Address, ImmutableError> {
-    write_with_tracker(repository, context, buffer, flags, None).await
+) -> impl Future<Output = Result<Address, ImmutableError>> {
+    write_with_tracker(repository, context, buffer, flags, None)
 }
 
 /// Tracker-aware variant of [`write`].
@@ -463,13 +469,16 @@ pub async fn write_with_tracker(
 
 /// Write a file to the immutable store, returning its address and the size of the content that
 /// address stands for.
-pub async fn write_from_file(
+///
+/// Returns [`write_from_file_with_tracker`]'s future itself: a future of its own would hold the
+/// arguments again beside it.
+pub fn write_from_file(
     repository: Arc<RepositoryContext>,
     source: &lore_storage::ContentSource<'_>,
     context: Context,
     flags: WriteOptions,
-) -> Result<(Address, u64), ImmutableError> {
-    write_from_file_with_tracker(repository, source, context, flags, None).await
+) -> impl Future<Output = Result<(Address, u64), ImmutableError>> {
+    write_from_file_with_tracker(repository, source, context, flags, None)
 }
 
 /// Tracker-aware variant of [`write_from_file`].
@@ -562,6 +571,21 @@ pub async fn cache(
         .forward("connecting to remote storage for cache");
     let remote_storage = storage_result?;
 
+    cache_through(repository, remote_storage, address, cache_fragmented).await
+}
+
+/// [`cache`] once connected: fetches every fragment at `address` the local store lacks
+/// through `remote_storage` and stores it, then the subfragments of fragmented ones when
+/// `cache_fragmented` is set.
+///
+/// A function of its own because its batches live across several awaits: kept in [`cache`]
+/// they would take space in its future while the remote is connected as well.
+async fn cache_through(
+    repository: Arc<RepositoryContext>,
+    remote_storage: Arc<StorageSession>,
+    address: Vec<Address>,
+    cache_fragmented: bool,
+) -> Result<usize, ImmutableError> {
     const MAX_REQUEST_COUNT: usize = 1000;
 
     let mut query_address = address;
@@ -741,35 +765,92 @@ pub async fn is_stored_local(repository: Arc<RepositoryContext>, address: Addres
 // Traits
 // ---------------------------------------------------------------------------
 
-#[async_trait]
 pub trait ReadFromImmutable<SelfType = Self>
 where
     SelfType: zerocopy::IntoBytes + zerocopy::Immutable + zerocopy::FromBytes + std::marker::Send,
 {
-    async fn read_from_immutable(
+    /// Reads the value stored at `address`, zeroed for a zero hash.
+    ///
+    /// The future is not boxed, and is as large as the read. A caller whose own future many
+    /// others hold, such as [`State::deserialize`](crate::state::State::deserialize), boxes it.
+    fn read_from_immutable(
         repository: Arc<RepositoryContext>,
         address: Address,
         options: ReadOptions,
-    ) -> Result<SelfType, ImmutableError> {
-        // This uninit is safe. It either reads all the bytes of the type, or zeroes
-        // out the memory before the data is dropped in case of error
-        let mut elem = std::mem::MaybeUninit::<SelfType>::uninit();
-        // Zero hash returns empty data from load_raw, so zero-init to avoid
-        // uninitialized memory (safe since SelfType: FromBytes)
-        if address.hash.is_zero() {
-            elem.zero();
-        } else {
+    ) -> impl Future<Output = Result<SelfType, ImmutableError>> + Send {
+        async move {
+            // This uninit is safe. It either reads all the bytes of the type, or zeroes
+            // out the memory before the data is dropped in case of error
+            let mut elem = std::mem::MaybeUninit::<SelfType>::uninit();
+            // Zero hash returns empty data from load_raw, so zero-init to avoid
+            // uninitialized memory (safe since SelfType: FromBytes)
+            if address.hash.is_zero() {
+                elem.zero();
+            } else {
+                let slice = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        elem.as_mut_ptr().cast::<u8>(),
+                        std::mem::size_of::<SelfType>(),
+                    )
+                };
+
+                // Bound the read by the compile-time size of the target type so a
+                // corrupt or hostile fragment cannot trigger a large allocation
+                // even if the caller did not supply a cap in `options`.
+                let options = options.with_max_content_size(std::mem::size_of::<SelfType>() as u64);
+
+                read_into(
+                    repository, address, None, /* Read full object */
+                    slice, options,
+                )
+                .await
+                .inspect_err(|_err| {
+                    elem.zero();
+                })?;
+            }
+
+            Ok(unsafe { elem.assume_init() })
+        }
+    }
+}
+
+impl<T> ReadFromImmutable<T> for T where
+    T: zerocopy::IntoBytes + zerocopy::Immutable + zerocopy::FromBytes + std::marker::Send
+{
+}
+
+pub trait ReadBoxFromImmutable<SelfType = Self>
+where
+    SelfType: zerocopy::IntoBytes
+        + zerocopy::FromBytes
+        + zerocopy::Immutable
+        + crate::lore::ZeroHeapAlloc
+        + std::marker::Send,
+{
+    /// Reads the value stored at `address` into a zeroed heap allocation.
+    ///
+    /// The future is not boxed, and is as large as the read.
+    fn read_box_from_immutable(
+        repository: Arc<RepositoryContext>,
+        address: Address,
+        cache: bool,
+    ) -> impl Future<Output = Result<lore_base::allocator::HeapBox<SelfType>, ImmutableError>> + Send
+    {
+        async move {
+            let mut elem = SelfType::new_from_heap_zeroed();
             let slice = unsafe {
                 std::slice::from_raw_parts_mut(
-                    elem.as_mut_ptr().cast::<u8>(),
+                    elem.as_mut_bytes().as_mut_ptr(),
                     std::mem::size_of::<SelfType>(),
                 )
             };
-
-            // Bound the read by the compile-time size of the target type so a
-            // corrupt or hostile fragment cannot trigger a large allocation
-            // even if the caller did not supply a cap in `options`.
-            let options = options.with_max_content_size(std::mem::size_of::<SelfType>() as u64);
+            // Target type size bounds the legal content size. Anything larger is
+            // a corrupt or hostile fragment and is rejected before any defragment
+            // buffer is allocated.
+            let options = read_options_from_repository(&repository)
+                .optional_cache(cache)
+                .with_priority()
+                .with_max_content_size(std::mem::size_of::<SelfType>() as u64);
 
             read_into(
                 repository, address, None, /* Read full object */
@@ -779,56 +860,9 @@ where
             .inspect_err(|_err| {
                 elem.zero();
             })?;
+
+            Ok(elem)
         }
-
-        Ok(unsafe { elem.assume_init() })
-    }
-}
-
-impl<T> ReadFromImmutable<T> for T where
-    T: zerocopy::IntoBytes + zerocopy::Immutable + zerocopy::FromBytes + std::marker::Send
-{
-}
-
-#[async_trait]
-pub trait ReadBoxFromImmutable<SelfType = Self>
-where
-    SelfType: zerocopy::IntoBytes
-        + zerocopy::FromBytes
-        + zerocopy::Immutable
-        + crate::lore::ZeroHeapAlloc
-        + std::marker::Send,
-{
-    async fn read_box_from_immutable(
-        repository: Arc<RepositoryContext>,
-        address: Address,
-        cache: bool,
-    ) -> Result<lore_base::allocator::HeapBox<SelfType>, ImmutableError> {
-        let mut elem = SelfType::new_from_heap_zeroed();
-        let slice = unsafe {
-            std::slice::from_raw_parts_mut(
-                elem.as_mut_bytes().as_mut_ptr(),
-                std::mem::size_of::<SelfType>(),
-            )
-        };
-        // Target type size bounds the legal content size. Anything larger is
-        // a corrupt or hostile fragment and is rejected before any defragment
-        // buffer is allocated.
-        let options = read_options_from_repository(&repository)
-            .optional_cache(cache)
-            .with_priority()
-            .with_max_content_size(std::mem::size_of::<SelfType>() as u64);
-
-        read_into(
-            repository, address, None, /* Read full object */
-            slice, options,
-        )
-        .await
-        .inspect_err(|_err| {
-            elem.zero();
-        })?;
-
-        Ok(elem)
     }
 }
 

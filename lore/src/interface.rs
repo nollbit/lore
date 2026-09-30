@@ -40,7 +40,11 @@ pub type LoreArray<T> = lore_revision::interface::LoreArray<T>;
 /// dependency on `lore_revision`.
 pub use lore_revision::repository::LoreSharedStoreMode;
 
+use crate::call_delegation::dispatch_command;
+use crate::call_delegation::invoke_locally;
 use crate::call_delegation::run_asynchronously;
+use crate::call_delegation::run_command;
+use crate::call_delegation::run_command_locally;
 use crate::call_delegation::run_synchronously;
 use crate::log;
 
@@ -127,7 +131,7 @@ pub extern "C" fn lore_auth_user_info(
     args: &LoreAuthUserInfoArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::auth::resolve_user_info)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_auth_user_info`.
@@ -137,7 +141,7 @@ pub extern "C" fn lore_auth_user_info_async(
     args: &LoreAuthUserInfoArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::auth::resolve_user_info);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreAuthLoginWithTokenArgs = crate::auth::LoreAuthLoginWithTokenArgs;
@@ -168,7 +172,7 @@ pub extern "C" fn lore_auth_login_with_token(
     args: &LoreAuthLoginWithTokenArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::auth::login_with_token)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_auth_login_with_token`.
@@ -178,7 +182,7 @@ pub extern "C" fn lore_auth_login_with_token_async(
     args: &LoreAuthLoginWithTokenArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::auth::login_with_token);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreAuthListArgs = crate::auth::LoreAuthListArgs;
@@ -211,7 +215,7 @@ pub extern "C" fn lore_auth_list(
     args: &LoreAuthListArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::auth::list)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_auth_list`.
@@ -221,7 +225,7 @@ pub extern "C" fn lore_auth_list_async(
     args: &LoreAuthListArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::auth::list);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreAuthLogoutArgs = crate::auth::LoreAuthLogoutArgs;
@@ -248,7 +252,7 @@ pub extern "C" fn lore_auth_logout(
     args: &LoreAuthLogoutArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::auth::logout)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_auth_logout`.
@@ -258,7 +262,7 @@ pub extern "C" fn lore_auth_logout_async(
     args: &LoreAuthLogoutArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::auth::logout);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreAuthClearArgs = crate::auth::LoreAuthClearArgs;
@@ -285,7 +289,7 @@ pub extern "C" fn lore_auth_clear(
     args: &LoreAuthClearArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::auth::clear)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_auth_clear`.
@@ -295,7 +299,7 @@ pub extern "C" fn lore_auth_clear_async(
     args: &LoreAuthClearArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::auth::clear);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreAuthLocalUserInfoArgs = crate::auth::LoreAuthLocalUserInfoArgs;
@@ -345,7 +349,7 @@ pub extern "C" fn lore_auth_local_user_info(
     args: &LoreAuthLocalUserInfoArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::auth::local_user_info)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_auth_local_user_info`.
@@ -355,7 +359,7 @@ pub extern "C" fn lore_auth_local_user_info_async(
     args: &LoreAuthLocalUserInfoArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::auth::local_user_info);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreAuthLoginInteractiveArgs = crate::auth::LoreAuthLoginInteractiveArgs;
@@ -389,7 +393,7 @@ pub extern "C" fn lore_auth_login_interactive(
     args: &LoreAuthLoginInteractiveArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::auth::login_interactive)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_auth_login_interactive`.
@@ -421,7 +425,7 @@ pub extern "C" fn lore_auth_login_interactive_async(
     args: &LoreAuthLoginInteractiveArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::auth::login_interactive);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchCreateArgs = crate::branch::LoreBranchCreateArgs;
@@ -460,7 +464,7 @@ pub extern "C" fn lore_branch_create(
     args: &LoreBranchCreateArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::create)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_create`.
@@ -497,7 +501,7 @@ pub extern "C" fn lore_branch_create_async(
     args: &LoreBranchCreateArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::create);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchInfoArgs = crate::branch::LoreBranchInfoArgs;
@@ -530,7 +534,7 @@ pub extern "C" fn lore_branch_info(
     args: &LoreBranchInfoArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::info)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_info`.
@@ -561,7 +565,7 @@ pub extern "C" fn lore_branch_info_async(
     args: &LoreBranchInfoArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::info);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchDiffArgs = crate::branch::LoreBranchDiffArgs;
@@ -601,7 +605,7 @@ pub extern "C" fn lore_branch_diff(
     args: &LoreBranchDiffArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::diff)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_diff`.
@@ -639,7 +643,7 @@ pub extern "C" fn lore_branch_diff_async(
     args: &LoreBranchDiffArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::diff);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchProtectArgs = crate::branch::LoreBranchProtectArgs;
@@ -672,7 +676,7 @@ pub extern "C" fn lore_branch_protect(
     args: &LoreBranchProtectArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::protect)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_protect`.
@@ -703,7 +707,7 @@ pub extern "C" fn lore_branch_protect_async(
     args: &LoreBranchProtectArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::protect);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchUnprotectArgs = crate::branch::LoreBranchUnprotectArgs;
@@ -736,7 +740,7 @@ pub extern "C" fn lore_branch_unprotect(
     args: &LoreBranchUnprotectArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::unprotect)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_unprotect`.
@@ -767,7 +771,7 @@ pub extern "C" fn lore_branch_unprotect_async(
     args: &LoreBranchUnprotectArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::unprotect);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchArchiveArgs = crate::branch::LoreBranchArchiveArgs;
@@ -800,7 +804,7 @@ pub extern "C" fn lore_branch_archive(
     args: &LoreBranchArchiveArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::archive)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_archive`.
@@ -831,7 +835,7 @@ pub extern "C" fn lore_branch_archive_async(
     args: &LoreBranchArchiveArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::archive);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchListArgs = crate::branch::LoreBranchListArgs;
@@ -866,7 +870,7 @@ pub extern "C" fn lore_branch_list(
     args: &LoreBranchListArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::list)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_list`.
@@ -899,7 +903,7 @@ pub extern "C" fn lore_branch_list_async(
     args: &LoreBranchListArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::list);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchMergeAbortArgs = crate::branch::LoreBranchMergeAbortArgs;
@@ -934,7 +938,7 @@ pub extern "C" fn lore_branch_merge_abort(
     args: &LoreBranchMergeAbortArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::merge_abort)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_merge_abort`.
@@ -967,7 +971,7 @@ pub extern "C" fn lore_branch_merge_abort_async(
     args: &LoreBranchMergeAbortArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::merge_abort);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchMergeUnresolveArgs = crate::branch::LoreBranchMergeUnresolveArgs;
@@ -1001,7 +1005,7 @@ pub extern "C" fn lore_branch_merge_unresolve(
     args: &LoreBranchMergeUnresolveArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::merge_unresolve)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_merge_unresolve`.
@@ -1033,7 +1037,7 @@ pub extern "C" fn lore_branch_merge_unresolve_async(
     args: &LoreBranchMergeUnresolveArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::merge_unresolve);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchMergeIntoArgs = crate::branch::LoreBranchMergeIntoArgs;
@@ -1081,7 +1085,7 @@ pub extern "C" fn lore_branch_merge_into(
     args: &LoreBranchMergeIntoArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::merge_into)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_merge_into`.
@@ -1127,7 +1131,7 @@ pub extern "C" fn lore_branch_merge_into_async(
     args: &LoreBranchMergeIntoArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::merge_into);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchMergeResolveArgs = crate::branch::LoreBranchMergeResolveArgs;
@@ -1161,7 +1165,7 @@ pub extern "C" fn lore_branch_merge_resolve(
     args: &LoreBranchMergeResolveArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::merge_resolve)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_merge_resolve`.
@@ -1193,7 +1197,7 @@ pub extern "C" fn lore_branch_merge_resolve_async(
     args: &LoreBranchMergeResolveArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::merge_resolve);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchMergeResolveMineArgs = crate::branch::LoreBranchMergeResolveMineArgs;
@@ -1227,7 +1231,7 @@ pub extern "C" fn lore_branch_merge_resolve_mine(
     args: &LoreBranchMergeResolveMineArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::merge_resolve_mine)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_merge_resolve_mine`.
@@ -1259,7 +1263,7 @@ pub extern "C" fn lore_branch_merge_resolve_mine_async(
     args: &LoreBranchMergeResolveMineArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::merge_resolve_mine);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchMergeResolveTheirsArgs = crate::branch::LoreBranchMergeResolveTheirsArgs;
@@ -1293,7 +1297,7 @@ pub extern "C" fn lore_branch_merge_resolve_theirs(
     args: &LoreBranchMergeResolveTheirsArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::merge_resolve_theirs)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_merge_resolve_theirs`.
@@ -1325,7 +1329,7 @@ pub extern "C" fn lore_branch_merge_resolve_theirs_async(
     args: &LoreBranchMergeResolveTheirsArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::merge_resolve_theirs);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchMergeRestartArgs = crate::branch::LoreBranchMergeRestartArgs;
@@ -1360,7 +1364,7 @@ pub extern "C" fn lore_branch_merge_restart(
     args: &LoreBranchMergeRestartArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::merge_restart)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_merge_restart`.
@@ -1393,7 +1397,7 @@ pub extern "C" fn lore_branch_merge_restart_async(
     args: &LoreBranchMergeRestartArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::merge_restart);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchMergeStartArgs = crate::branch::LoreBranchMergeStartArgs;
@@ -1437,7 +1441,7 @@ pub extern "C" fn lore_branch_merge_start(
     args: &LoreBranchMergeStartArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::merge_start)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_merge_start`.
@@ -1479,7 +1483,7 @@ pub extern "C" fn lore_branch_merge_start_async(
     args: &LoreBranchMergeStartArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::merge_start);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchSwitchArgs = crate::branch::LoreBranchSwitchArgs;
@@ -1519,7 +1523,7 @@ pub extern "C" fn lore_branch_switch(
     args: &LoreBranchSwitchArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::switch)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_switch`.
@@ -1557,7 +1561,7 @@ pub extern "C" fn lore_branch_switch_async(
     args: &LoreBranchSwitchArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::switch);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchResetArgs = crate::branch::LoreBranchResetArgs;
@@ -1590,7 +1594,7 @@ pub extern "C" fn lore_branch_reset(
     args: &LoreBranchResetArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::reset)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_reset`.
@@ -1621,7 +1625,71 @@ pub extern "C" fn lore_branch_reset_async(
     args: &LoreBranchResetArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::reset);
+    run_asynchronously(globals, args, callback, dispatch_command);
+}
+
+pub type LoreBranchLatestListArgs = crate::branch::LoreBranchLatestListArgs;
+
+/// List the revisions the LATEST of a branch has held, most recent first.
+///
+/// # Events
+///
+/// Events are delivered via the callback as `lore_event_t`. Use the `tag` field to identify the event type.
+///
+/// ## Standard Events
+///
+/// These events are emitted by all interface functions:
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_LOG` | `lore_log_event_data_t` | Diagnostic messages throughout execution |
+/// | `LORE_EVENT_ERROR` | `lore_error_event_data_t` | Emitted for a non-fatal error during the operation |
+/// | `LORE_EVENT_COMPLETE` | `lore_complete_event_data_t` | Always emitted at the end; `status` is `0` on success or the error code on failure |
+/// | `LORE_EVENT_END` | `lore_end_event_data_t` | Always emitted after `COMPLETE` to signal callback termination |
+///
+/// ## Branch Events
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_BRANCH_LATEST_LIST_ENTRY` | `lore_branch_latest_list_entry_event_data_t` | Emitted for each revision the branch LATEST has held, most recent first |
+#[unsafe(no_mangle)]
+pub extern "C" fn lore_branch_latest_list(
+    globals: &LoreGlobalArgs,
+    args: &LoreBranchLatestListArgs,
+    callback: LoreEventCallbackConfig,
+) -> i32 {
+    run_synchronously(globals, args, callback, run_command)
+}
+
+/// Asynchronous version of `lore_branch_latest_list`.
+///
+/// # Events
+///
+/// Events are delivered via the callback as `lore_event_t`. Use the `tag` field to identify the event type.
+///
+/// ## Standard Events
+///
+/// These events are emitted by all interface functions:
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_LOG` | `lore_log_event_data_t` | Diagnostic messages throughout execution |
+/// | `LORE_EVENT_ERROR` | `lore_error_event_data_t` | Emitted for a non-fatal error during the operation |
+/// | `LORE_EVENT_COMPLETE` | `lore_complete_event_data_t` | Always emitted at the end; `status` is `0` on success or the error code on failure |
+/// | `LORE_EVENT_END` | `lore_end_event_data_t` | Always emitted after `COMPLETE` to signal callback termination |
+///
+/// ## Branch Events
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_BRANCH_LATEST_LIST_ENTRY` | `lore_branch_latest_list_entry_event_data_t` | Emitted for each revision the branch LATEST has held, most recent first |
+#[unsafe(no_mangle)]
+pub extern "C" fn lore_branch_latest_list_async(
+    globals: &LoreGlobalArgs,
+    args: &LoreBranchLatestListArgs,
+    callback: LoreEventCallbackConfig,
+) {
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchPushArgs = crate::branch::LoreBranchPushArgs;
@@ -1664,7 +1732,7 @@ pub extern "C" fn lore_branch_push(
     args: &LoreBranchPushArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::push)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_push`.
@@ -1705,7 +1773,7 @@ pub extern "C" fn lore_branch_push_async(
     args: &LoreBranchPushArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::push);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchMetadataGetArgs = crate::branch::LoreBranchMetadataGetArgs;
@@ -1717,7 +1785,7 @@ pub extern "C" fn lore_branch_metadata_get(
     args: &LoreBranchMetadataGetArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::metadata_get)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_metadata_get`.
@@ -1727,7 +1795,7 @@ pub extern "C" fn lore_branch_metadata_get_async(
     args: &LoreBranchMetadataGetArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::metadata_get);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchMetadataSetArgs = crate::branch::LoreBranchMetadataSetArgs;
@@ -1739,7 +1807,7 @@ pub extern "C" fn lore_branch_metadata_set(
     args: &LoreBranchMetadataSetArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::metadata_set)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_metadata_set`.
@@ -1749,7 +1817,7 @@ pub extern "C" fn lore_branch_metadata_set_async(
     args: &LoreBranchMetadataSetArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::metadata_set);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreBranchMetadataClearArgs = crate::branch::LoreBranchMetadataClearArgs;
@@ -1761,7 +1829,7 @@ pub extern "C" fn lore_branch_metadata_clear(
     args: &LoreBranchMetadataClearArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::branch::metadata_clear)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_branch_metadata_clear`.
@@ -1771,7 +1839,7 @@ pub extern "C" fn lore_branch_metadata_clear_async(
     args: &LoreBranchMetadataClearArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::branch::metadata_clear);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileInfoArgs = crate::file::LoreFileInfoArgs;
@@ -1804,7 +1872,7 @@ pub extern "C" fn lore_file_info(
     args: &LoreFileInfoArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::info)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_info`.
@@ -1835,7 +1903,7 @@ pub extern "C" fn lore_file_info_async(
     args: &LoreFileInfoArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::info);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileDiffArgs = crate::file::LoreFileDiffArgs;
@@ -1868,7 +1936,7 @@ pub extern "C" fn lore_file_diff(
     args: &LoreFileDiffArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::diff)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_diff`.
@@ -1899,7 +1967,7 @@ pub extern "C" fn lore_file_diff_async(
     args: &LoreFileDiffArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::diff);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileHashArgs = crate::file::LoreFileHashArgs;
@@ -1932,7 +2000,7 @@ pub extern "C" fn lore_file_hash(
     args: &LoreFileHashArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::hash)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_hash`.
@@ -1963,7 +2031,7 @@ pub extern "C" fn lore_file_hash_async(
     args: &LoreFileHashArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::hash);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileHistoryArgs = crate::file::LoreFileHistoryArgs;
@@ -1996,7 +2064,7 @@ pub extern "C" fn lore_file_history(
     args: &LoreFileHistoryArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::history)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_history`.
@@ -2027,7 +2095,7 @@ pub extern "C" fn lore_file_history_async(
     args: &LoreFileHistoryArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::history);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileMetadataClearArgs = crate::file::LoreFileMetadataClearArgs;
@@ -2060,7 +2128,7 @@ pub extern "C" fn lore_file_metadata_clear(
     args: &LoreFileMetadataClearArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::metadata_clear)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_metadata_clear`.
@@ -2091,7 +2159,7 @@ pub extern "C" fn lore_file_metadata_clear_async(
     args: &LoreFileMetadataClearArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::metadata_clear);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileMetadataGetArgs = crate::file::LoreFileMetadataGetArgs;
@@ -2124,7 +2192,7 @@ pub extern "C" fn lore_file_metadata_get(
     args: &LoreFileMetadataGetArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::metadata_get)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_metadata_get`.
@@ -2155,7 +2223,7 @@ pub extern "C" fn lore_file_metadata_get_async(
     args: &LoreFileMetadataGetArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::metadata_get);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileMetadataListArgs = crate::file::LoreFileMetadataListArgs;
@@ -2188,7 +2256,7 @@ pub extern "C" fn lore_file_metadata_list(
     args: &LoreFileMetadataListArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::metadata_list)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_metadata_list`.
@@ -2219,7 +2287,7 @@ pub extern "C" fn lore_file_metadata_list_async(
     args: &LoreFileMetadataListArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::metadata_list);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileMetadataSetArgs = crate::file::LoreFileMetadataSetArgs;
@@ -2246,7 +2314,7 @@ pub extern "C" fn lore_file_metadata_set(
     args: &LoreFileMetadataSetArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::metadata_set)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_metadata_set`.
@@ -2271,7 +2339,7 @@ pub extern "C" fn lore_file_metadata_set_async(
     args: &LoreFileMetadataSetArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::metadata_set);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileResetArgs = crate::file::LoreFileResetArgs;
@@ -2310,7 +2378,7 @@ pub extern "C" fn lore_file_reset(
     args: &LoreFileResetArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::reset)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_reset`.
@@ -2347,7 +2415,7 @@ pub extern "C" fn lore_file_reset_async(
     args: &LoreFileResetArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::reset);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileResetToLastMergedArgs = crate::file::LoreFileResetToLastMergedArgs;
@@ -2385,7 +2453,7 @@ pub extern "C" fn lore_file_reset_to_last_merged(
     args: &LoreFileResetToLastMergedArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::reset_to_last_merged)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_reset_to_last_merged`.
@@ -2421,7 +2489,7 @@ pub extern "C" fn lore_file_reset_to_last_merged_async(
     args: &LoreFileResetToLastMergedArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::reset_to_last_merged);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileStageArgs = crate::file::LoreFileStageArgs;
@@ -2459,7 +2527,7 @@ pub extern "C" fn lore_file_stage(
     args: &LoreFileStageArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::stage)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_stage`.
@@ -2495,7 +2563,7 @@ pub extern "C" fn lore_file_stage_async(
     args: &LoreFileStageArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::stage);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileStageMergeArgs = crate::file::LoreFileStageMergeArgs;
@@ -2531,7 +2599,7 @@ pub extern "C" fn lore_file_stage_merge(
     args: &LoreFileStageMergeArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::stage_merge)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_stage_merge`.
@@ -2565,7 +2633,7 @@ pub extern "C" fn lore_file_stage_merge_async(
     args: &LoreFileStageMergeArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::stage_merge);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileStageMoveArgs = crate::file::LoreFileStageMoveArgs;
@@ -2601,7 +2669,7 @@ pub extern "C" fn lore_file_stage_move(
     args: &LoreFileStageMoveArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::stage_move)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_stage_move`.
@@ -2635,7 +2703,7 @@ pub extern "C" fn lore_file_stage_move_async(
     args: &LoreFileStageMoveArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::stage_move);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileDirtyArgs = crate::file::LoreFileDirtyArgs;
@@ -2672,7 +2740,7 @@ pub extern "C" fn lore_file_dirty(
     args: &LoreFileDirtyArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::dirty)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_dirty`.
@@ -2704,7 +2772,7 @@ pub extern "C" fn lore_file_dirty_async(
     args: &LoreFileDirtyArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::dirty);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileDirtyMoveArgs = crate::file::LoreFileDirtyMoveArgs;
@@ -2735,7 +2803,7 @@ pub extern "C" fn lore_file_dirty_move(
     args: &LoreFileDirtyMoveArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::dirty_move)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_dirty_move`.
@@ -2760,7 +2828,7 @@ pub extern "C" fn lore_file_dirty_move_async(
     args: &LoreFileDirtyMoveArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::dirty_move);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileDirtyCopyArgs = crate::file::LoreFileDirtyCopyArgs;
@@ -2790,7 +2858,7 @@ pub extern "C" fn lore_file_dirty_copy(
     args: &LoreFileDirtyCopyArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::dirty_copy)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_dirty_copy`.
@@ -2815,7 +2883,7 @@ pub extern "C" fn lore_file_dirty_copy_async(
     args: &LoreFileDirtyCopyArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::dirty_copy);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileUnstageArgs = crate::file::LoreFileUnstageArgs;
@@ -2852,7 +2920,7 @@ pub extern "C" fn lore_file_unstage(
     args: &LoreFileUnstageArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::unstage)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_unstage`.
@@ -2887,7 +2955,7 @@ pub extern "C" fn lore_file_unstage_async(
     args: &LoreFileUnstageArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::unstage);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileWriteArgs = crate::file::LoreFileWriteArgs;
@@ -2920,7 +2988,7 @@ pub extern "C" fn lore_file_write(
     args: &LoreFileWriteArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::write)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_write`.
@@ -2951,7 +3019,7 @@ pub extern "C" fn lore_file_write_async(
     args: &LoreFileWriteArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::write);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileObliterateArgs = crate::file::LoreFileObliterateArgs;
@@ -2984,7 +3052,7 @@ pub extern "C" fn lore_file_obliterate(
     args: &LoreFileObliterateArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::obliterate)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_obliterate`.
@@ -3015,7 +3083,7 @@ pub extern "C" fn lore_file_obliterate_async(
     args: &LoreFileObliterateArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::obliterate);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileDumpArgs = crate::file::LoreFileDumpArgs;
@@ -3048,7 +3116,7 @@ pub extern "C" fn lore_file_dump(
     args: &LoreFileDumpArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::file::dump)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_dump`.
@@ -3079,7 +3147,7 @@ pub extern "C" fn lore_file_dump_async(
     args: &LoreFileDumpArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::file::dump);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileDependencyAddArgs = crate::dependency::LoreFileDependencyAddArgs;
@@ -3110,7 +3178,7 @@ pub extern "C" fn lore_file_dependency_add(
     args: &LoreFileDependencyAddArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::dependency::dependency_add)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_dependency_add`.
@@ -3139,7 +3207,7 @@ pub extern "C" fn lore_file_dependency_add_async(
     args: &LoreFileDependencyAddArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::dependency::dependency_add);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileDependencyRemoveArgs = crate::dependency::LoreFileDependencyRemoveArgs;
@@ -3170,12 +3238,7 @@ pub extern "C" fn lore_file_dependency_remove(
     args: &LoreFileDependencyRemoveArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::dependency::dependency_remove,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_dependency_remove`.
@@ -3204,12 +3267,7 @@ pub extern "C" fn lore_file_dependency_remove_async(
     args: &LoreFileDependencyRemoveArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::dependency::dependency_remove,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreFileDependencyListArgs = crate::dependency::LoreFileDependencyListArgs;
@@ -3242,7 +3300,7 @@ pub extern "C" fn lore_file_dependency_list(
     args: &LoreFileDependencyListArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::dependency::dependency_list)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_file_dependency_list`.
@@ -3273,7 +3331,7 @@ pub extern "C" fn lore_file_dependency_list_async(
     args: &LoreFileDependencyListArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::dependency::dependency_list);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreLockFileAcquireArgs = crate::lock::LoreLockFileAcquireArgs;
@@ -3307,7 +3365,7 @@ pub extern "C" fn lore_lock_file_acquire(
     args: &LoreLockFileAcquireArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::lock::file_acquire)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_lock_file_acquire`.
@@ -3339,7 +3397,7 @@ pub extern "C" fn lore_lock_file_acquire_async(
     args: &LoreLockFileAcquireArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::lock::file_acquire);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreLockFileStatusArgs = crate::lock::LoreLockFileStatusArgs;
@@ -3373,7 +3431,7 @@ pub extern "C" fn lore_lock_file_status(
     args: &LoreLockFileStatusArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::lock::file_status)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_lock_file_status`.
@@ -3405,7 +3463,7 @@ pub extern "C" fn lore_lock_file_status_async(
     args: &LoreLockFileStatusArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::lock::file_status);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreLockFileQueryArgs = crate::lock::LoreLockFileQueryArgs;
@@ -3439,7 +3497,7 @@ pub extern "C" fn lore_lock_file_query(
     args: &LoreLockFileQueryArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::lock::file_query)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_lock_file_query`.
@@ -3471,7 +3529,7 @@ pub extern "C" fn lore_lock_file_query_async(
     args: &LoreLockFileQueryArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::lock::file_query);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreLockFileReleaseArgs = crate::lock::LoreLockFileReleaseArgs;
@@ -3505,7 +3563,7 @@ pub extern "C" fn lore_lock_file_release(
     args: &LoreLockFileReleaseArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::lock::file_release)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_lock_file_release`.
@@ -3537,7 +3595,7 @@ pub extern "C" fn lore_lock_file_release_async(
     args: &LoreLockFileReleaseArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::lock::file_release);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreLinkAddArgs = crate::link::LoreLinkAddArgs;
@@ -3573,7 +3631,7 @@ pub extern "C" fn lore_link_add(
     args: &LoreLinkAddArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::link::add)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_link_add`.
@@ -3607,7 +3665,7 @@ pub extern "C" fn lore_link_add_async(
     args: &LoreLinkAddArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::link::add);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreLinkRemoveArgs = crate::link::LoreLinkRemoveArgs;
@@ -3640,7 +3698,7 @@ pub extern "C" fn lore_link_remove(
     args: &LoreLinkRemoveArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::link::remove)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_link_remove`.
@@ -3671,7 +3729,7 @@ pub extern "C" fn lore_link_remove_async(
     args: &LoreLinkRemoveArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::link::remove);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreLinkInfoArgs = crate::link::LoreLinkInfoArgs;
@@ -3704,7 +3762,7 @@ pub extern "C" fn lore_link_info(
     args: &LoreLinkInfoArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::link::info)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_link_info`.
@@ -3735,7 +3793,7 @@ pub extern "C" fn lore_link_info_async(
     args: &LoreLinkInfoArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::link::info);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreLinkListArgs = crate::link::LoreLinkListArgs;
@@ -3768,7 +3826,7 @@ pub extern "C" fn lore_link_list(
     args: &LoreLinkListArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::link::list)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_link_list`.
@@ -3799,7 +3857,71 @@ pub extern "C" fn lore_link_list_async(
     args: &LoreLinkListArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::link::list);
+    run_asynchronously(globals, args, callback, dispatch_command);
+}
+
+pub type LoreLinkListStagedArgs = crate::link::LoreLinkListStagedArgs;
+
+/// List the links whose linked repositories hold staged changes, including nested links.
+///
+/// # Events
+///
+/// Events are delivered via the callback as `lore_event_t`. Use the `tag` field to identify the event type.
+///
+/// ## Standard Events
+///
+/// These events are emitted by all interface functions:
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_LOG` | `lore_log_event_data_t` | Diagnostic messages throughout execution |
+/// | `LORE_EVENT_ERROR` | `lore_error_event_data_t` | Emitted for a non-fatal error during the operation |
+/// | `LORE_EVENT_COMPLETE` | `lore_complete_event_data_t` | Always emitted at the end; `status` is `0` on success or the error code on failure |
+/// | `LORE_EVENT_END` | `lore_end_event_data_t` | Always emitted after `COMPLETE` to signal callback termination |
+///
+/// ## Link Events
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_LINK_STAGED_ENTRY` | `lore_link_staged_entry_event_data_t` | Emitted for each link with staged changes |
+#[unsafe(no_mangle)]
+pub extern "C" fn lore_link_list_staged(
+    globals: &LoreGlobalArgs,
+    args: &LoreLinkListStagedArgs,
+    callback: LoreEventCallbackConfig,
+) -> i32 {
+    run_synchronously(globals, args, callback, run_command)
+}
+
+/// Asynchronous version of `lore_link_list_staged`.
+///
+/// # Events
+///
+/// Events are delivered via the callback as `lore_event_t`. Use the `tag` field to identify the event type.
+///
+/// ## Standard Events
+///
+/// These events are emitted by all interface functions:
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_LOG` | `lore_log_event_data_t` | Diagnostic messages throughout execution |
+/// | `LORE_EVENT_ERROR` | `lore_error_event_data_t` | Emitted for a non-fatal error during the operation |
+/// | `LORE_EVENT_COMPLETE` | `lore_complete_event_data_t` | Always emitted at the end; `status` is `0` on success or the error code on failure |
+/// | `LORE_EVENT_END` | `lore_end_event_data_t` | Always emitted after `COMPLETE` to signal callback termination |
+///
+/// ## Link Events
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_LINK_STAGED_ENTRY` | `lore_link_staged_entry_event_data_t` | Emitted for each link with staged changes |
+#[unsafe(no_mangle)]
+pub extern "C" fn lore_link_list_staged_async(
+    globals: &LoreGlobalArgs,
+    args: &LoreLinkListStagedArgs,
+    callback: LoreEventCallbackConfig,
+) {
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreLinkUpdateArgs = crate::link::LoreLinkUpdateArgs;
@@ -3832,7 +3954,7 @@ pub extern "C" fn lore_link_update(
     args: &LoreLinkUpdateArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::link::update)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_link_update`.
@@ -3863,7 +3985,7 @@ pub extern "C" fn lore_link_update_async(
     args: &LoreLinkUpdateArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::link::update);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRepositoryCloneArgs = crate::repository::LoreRepositoryCloneArgs;
@@ -3904,7 +4026,7 @@ pub extern "C" fn lore_repository_clone(
     args: &LoreRepositoryCloneArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::repository::clone)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_repository_clone`.
@@ -3943,7 +4065,7 @@ pub extern "C" fn lore_repository_clone_async(
     args: &LoreRepositoryCloneArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::repository::clone);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRepositoryInfoArgs = crate::repository::LoreRepositoryInfoArgs;
@@ -3976,7 +4098,7 @@ pub extern "C" fn lore_repository_info(
     args: &LoreRepositoryInfoArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::repository::info)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_repository_info`.
@@ -4007,7 +4129,7 @@ pub extern "C" fn lore_repository_info_async(
     args: &LoreRepositoryInfoArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::repository::info);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRepositoryDumpArgs = crate::repository::LoreRepositoryDumpArgs;
@@ -4043,7 +4165,7 @@ pub extern "C" fn lore_repository_dump(
     args: &LoreRepositoryDumpArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::repository::dump)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_repository_dump`.
@@ -4077,7 +4199,7 @@ pub extern "C" fn lore_repository_dump_async(
     args: &LoreRepositoryDumpArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::repository::dump);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRepositoryCreateArgs = crate::repository::LoreRepositoryCreateArgs;
@@ -4111,7 +4233,7 @@ pub extern "C" fn lore_repository_create(
     args: &LoreRepositoryCreateArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::repository::create)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_repository_create`.
@@ -4142,7 +4264,59 @@ pub extern "C" fn lore_repository_create_async(
     args: &LoreRepositoryCreateArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::repository::create);
+    run_asynchronously(globals, args, callback, dispatch_command);
+}
+
+pub type LoreRepositoryDeleteArgs = crate::repository::LoreRepositoryDeleteArgs;
+
+/// Delete a Lore repository on the remote server.
+///
+/// # Events
+///
+/// Events are delivered via the callback as `lore_event_t`. Use the `tag` field to identify the event type.
+///
+/// ## Standard Events
+///
+/// These events are emitted by all interface functions:
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_LOG` | `lore_log_event_data_t` | Diagnostic messages throughout execution |
+/// | `LORE_EVENT_ERROR` | `lore_error_event_data_t` | Emitted for a non-fatal error during the operation |
+/// | `LORE_EVENT_COMPLETE` | `lore_complete_event_data_t` | Always emitted at the end; `status` is `0` on success or the error code on failure |
+/// | `LORE_EVENT_END` | `lore_end_event_data_t` | Always emitted after `COMPLETE` to signal callback termination |
+#[unsafe(no_mangle)]
+pub extern "C" fn lore_repository_delete(
+    globals: &LoreGlobalArgs,
+    args: &LoreRepositoryDeleteArgs,
+    callback: LoreEventCallbackConfig,
+) -> i32 {
+    run_synchronously(globals, args, callback, run_command)
+}
+
+/// Asynchronous version of `lore_repository_delete`.
+///
+/// # Events
+///
+/// Events are delivered via the callback as `lore_event_t`. Use the `tag` field to identify the event type.
+///
+/// ## Standard Events
+///
+/// These events are emitted by all interface functions:
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_LOG` | `lore_log_event_data_t` | Diagnostic messages throughout execution |
+/// | `LORE_EVENT_ERROR` | `lore_error_event_data_t` | Emitted for a non-fatal error during the operation |
+/// | `LORE_EVENT_COMPLETE` | `lore_complete_event_data_t` | Always emitted at the end; `status` is `0` on success or the error code on failure |
+/// | `LORE_EVENT_END` | `lore_end_event_data_t` | Always emitted after `COMPLETE` to signal callback termination |
+#[unsafe(no_mangle)]
+pub extern "C" fn lore_repository_delete_async(
+    globals: &LoreGlobalArgs,
+    args: &LoreRepositoryDeleteArgs,
+    callback: LoreEventCallbackConfig,
+) {
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRepositoryFlushArgs = crate::repository::LoreRepositoryFlushArgs;
@@ -4169,7 +4343,7 @@ pub extern "C" fn lore_repository_flush(
     args: &LoreRepositoryFlushArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::repository::flush)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_repository_flush`.
@@ -4194,7 +4368,7 @@ pub extern "C" fn lore_repository_flush_async(
     args: &LoreRepositoryFlushArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::repository::flush);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRepositoryGcArgs = crate::repository::LoreRepositoryGcArgs;
@@ -4221,7 +4395,7 @@ pub extern "C" fn lore_repository_gc(
     args: &LoreRepositoryGcArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::repository::gc)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_repository_gc`.
@@ -4246,7 +4420,7 @@ pub extern "C" fn lore_repository_gc_async(
     args: &LoreRepositoryGcArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::repository::gc);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRepositoryReleaseArgs = crate::repository::LoreRepositoryReleaseArgs;
@@ -4277,7 +4451,7 @@ pub extern "C" fn lore_repository_release(
     args: &LoreRepositoryReleaseArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::repository::release)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_repository_release`.
@@ -4302,7 +4476,7 @@ pub extern "C" fn lore_repository_release_async(
     args: &LoreRepositoryReleaseArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::repository::release);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreLayerAddArgs = crate::layer::LoreLayerAddArgs;
@@ -4335,7 +4509,7 @@ pub extern "C" fn lore_layer_add(
     args: &LoreLayerAddArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::layer::layer_add)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_layer_add`.
@@ -4366,7 +4540,7 @@ pub extern "C" fn lore_layer_add_async(
     args: &LoreLayerAddArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::layer::layer_add);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreLayerRemoveArgs = crate::layer::LoreLayerRemoveArgs;
@@ -4393,7 +4567,7 @@ pub extern "C" fn lore_layer_remove(
     args: &LoreLayerRemoveArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::layer::layer_remove)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_layer_remove`.
@@ -4418,7 +4592,7 @@ pub extern "C" fn lore_layer_remove_async(
     args: &LoreLayerRemoveArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::layer::layer_remove);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreLayerListArgs = crate::layer::LoreLayerListArgs;
@@ -4451,7 +4625,7 @@ pub extern "C" fn lore_layer_list(
     args: &LoreLayerListArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::layer::layer_list)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_layer_list`.
@@ -4482,7 +4656,7 @@ pub extern "C" fn lore_layer_list_async(
     args: &LoreLayerListArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::layer::layer_list);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRepositoryListArgs = crate::repository::LoreRepositoryListArgs;
@@ -4515,7 +4689,7 @@ pub extern "C" fn lore_repository_list(
     args: &LoreRepositoryListArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::repository::list)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_repository_list`.
@@ -4546,7 +4720,7 @@ pub extern "C" fn lore_repository_list_async(
     args: &LoreRepositoryListArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::repository::list);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRepositoryStatusArgs = crate::repository::LoreRepositoryStatusArgs;
@@ -4581,7 +4755,7 @@ pub extern "C" fn lore_repository_status(
     args: &LoreRepositoryStatusArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::repository::status)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_repository_status`.
@@ -4614,7 +4788,7 @@ pub extern "C" fn lore_repository_status_async(
     args: &LoreRepositoryStatusArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::repository::status);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRepositoryStoreImmutableQueryArgs =
@@ -4648,12 +4822,7 @@ pub extern "C" fn lore_repository_store_immutable_query(
     args: &LoreRepositoryStoreImmutableQueryArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::repository::store_immutable_query,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_repository_store_immutable_query`.
@@ -4684,12 +4853,7 @@ pub extern "C" fn lore_repository_store_immutable_query_async(
     args: &LoreRepositoryStoreImmutableQueryArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::repository::store_immutable_query,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRepositoryVerifyStateArgs = crate::repository::LoreRepositoryVerifyStateArgs;
@@ -4726,7 +4890,7 @@ pub extern "C" fn lore_repository_verify_state(
     args: &LoreRepositoryVerifyStateArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::repository::verify_state)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_repository_verify_state`.
@@ -4760,7 +4924,7 @@ pub extern "C" fn lore_repository_verify_state_async(
     args: &LoreRepositoryVerifyStateArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::repository::verify_state);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionCommitArgs = crate::revision::LoreRevisionCommitArgs;
@@ -4798,7 +4962,7 @@ pub extern "C" fn lore_revision_commit(
     args: &LoreRevisionCommitArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision::commit)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_revision_commit`.
@@ -4834,7 +4998,7 @@ pub extern "C" fn lore_revision_commit_async(
     args: &LoreRevisionCommitArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision::commit);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionAmendArgs = crate::revision::LoreRevisionAmendArgs;
@@ -4868,7 +5032,7 @@ pub extern "C" fn lore_revision_amend(
     args: &LoreRevisionAmendArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision::amend)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_revision_amend`.
@@ -4900,7 +5064,7 @@ pub extern "C" fn lore_revision_amend_async(
     args: &LoreRevisionAmendArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision::amend);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionInfoArgs = crate::revision::LoreRevisionInfoArgs;
@@ -4935,7 +5099,7 @@ pub extern "C" fn lore_revision_info(
     args: &LoreRevisionInfoArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision::info)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_revision_info`.
@@ -4968,7 +5132,7 @@ pub extern "C" fn lore_revision_info_async(
     args: &LoreRevisionInfoArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision::info);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionDiffArgs = crate::revision::LoreRevisionDiffArgs;
@@ -5002,7 +5166,7 @@ pub extern "C" fn lore_revision_diff(
     args: &LoreRevisionDiffArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision::diff)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_revision_diff`.
@@ -5034,7 +5198,7 @@ pub extern "C" fn lore_revision_diff_async(
     args: &LoreRevisionDiffArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision::diff);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionFindArgs = crate::revision::LoreRevisionFindArgs;
@@ -5067,7 +5231,7 @@ pub extern "C" fn lore_revision_find(
     args: &LoreRevisionFindArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision::find)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_revision_find`.
@@ -5098,7 +5262,7 @@ pub extern "C" fn lore_revision_find_async(
     args: &LoreRevisionFindArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision::find);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionHistoryArgs = crate::revision::LoreRevisionHistoryArgs;
@@ -5132,7 +5296,7 @@ pub extern "C" fn lore_revision_history(
     args: &LoreRevisionHistoryArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision::history)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_revision_history`.
@@ -5164,7 +5328,7 @@ pub extern "C" fn lore_revision_history_async(
     args: &LoreRevisionHistoryArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision::history);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionRestoreArgs = crate::revision::LoreRevisionRestoreArgs;
@@ -5212,7 +5376,7 @@ pub extern "C" fn lore_revision_restore(
     args: &LoreRevisionRestoreArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision::restore)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_revision_restore`.
@@ -5258,7 +5422,7 @@ pub extern "C" fn lore_revision_restore_async(
     args: &LoreRevisionRestoreArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision::restore);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionMetadataClearArgs = crate::revision::LoreRevisionMetadataClearArgs;
@@ -5291,7 +5455,7 @@ pub extern "C" fn lore_revision_metadata_clear(
     args: &LoreRevisionMetadataClearArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision::metadata_clear)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_revision_metadata_clear`.
@@ -5322,7 +5486,7 @@ pub extern "C" fn lore_revision_metadata_clear_async(
     args: &LoreRevisionMetadataClearArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision::metadata_clear);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionMetadataGetArgs = crate::revision::LoreRevisionMetadataGetArgs;
@@ -5355,7 +5519,7 @@ pub extern "C" fn lore_revision_metadata_get(
     args: &LoreRevisionMetadataGetArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision::metadata_get)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_revision_metadata_get`.
@@ -5386,7 +5550,7 @@ pub extern "C" fn lore_revision_metadata_get_async(
     args: &LoreRevisionMetadataGetArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision::metadata_get);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionMetadataListArgs = crate::revision::LoreRevisionMetadataListArgs;
@@ -5419,7 +5583,7 @@ pub extern "C" fn lore_revision_metadata_list(
     args: &LoreRevisionMetadataListArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision::metadata_list)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_revision_metadata_list`.
@@ -5450,7 +5614,7 @@ pub extern "C" fn lore_revision_metadata_list_async(
     args: &LoreRevisionMetadataListArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision::metadata_list);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionMetadataSetArgs = crate::revision::LoreRevisionMetadataSetArgs;
@@ -5477,7 +5641,7 @@ pub extern "C" fn lore_revision_metadata_set(
     args: &LoreRevisionMetadataSetArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision::metadata_set)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_revision_metadata_set`.
@@ -5502,7 +5666,7 @@ pub extern "C" fn lore_revision_metadata_set_async(
     args: &LoreRevisionMetadataSetArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision::metadata_set);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionSyncArgs = crate::revision::LoreRevisionSyncArgs;
@@ -5550,7 +5714,7 @@ pub extern "C" fn lore_revision_sync(
     args: &LoreRevisionSyncArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision::sync)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_revision_sync`.
@@ -5596,7 +5760,180 @@ pub extern "C" fn lore_revision_sync_async(
     args: &LoreRevisionSyncArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision::sync);
+    run_asynchronously(globals, args, callback, dispatch_command);
+}
+
+pub type LoreRevisionBisectArgs = crate::revision::LoreRevisionBisectArgs;
+
+/// Take one step of a bisect between two revisions, synchronizing the working directory to the
+/// revision halfway between them.
+///
+/// # Events
+///
+/// Events are delivered via the callback as `lore_event_t`. Use the `tag` field to identify the event type.
+///
+/// ## Standard Events
+///
+/// These events are emitted by all interface functions:
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_LOG` | `lore_log_event_data_t` | Diagnostic messages throughout execution |
+/// | `LORE_EVENT_ERROR` | `lore_error_event_data_t` | Emitted for a non-fatal error during the operation |
+/// | `LORE_EVENT_COMPLETE` | `lore_complete_event_data_t` | Always emitted at the end; `status` is `0` on success or the error code on failure |
+/// | `LORE_EVENT_END` | `lore_end_event_data_t` | Always emitted after `COMPLETE` to signal callback termination |
+///
+/// ## Bisect Events
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_REVISION_BISECT` | `lore_revision_bisect_event_data_t` | Emitted once the working directory is synchronized to the selected revision, with the revision numbers of the range and whether the search is done |
+///
+/// ## Sync Events
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_REVISION_SYNC_TARGET` | `lore_revision_sync_target_event_data_t` | Emitted once after resolving the selected revision |
+/// | `LORE_EVENT_REVISION_SYNC_FILE` | `lore_revision_sync_file_event_data_t` | Emitted for each file deleted, modified, added, or merged during sync |
+/// | `LORE_EVENT_REVISION_SYNC_PROGRESS` | `lore_revision_sync_progress_event_data_t` | Emitted periodically during file realization and once at completion |
+/// | `LORE_EVENT_REVISION_SYNC_REVISION` | `lore_revision_sync_revision_event_data_t` | Emitted once at the end with the resulting revision |
+/// | `LORE_EVENT_REVISION_RESOLVE` | `lore_revision_resolve_event_data_t` | Emitted when resolving a revision |
+/// | `LORE_EVENT_FILTER_EXCLUDE` | `lore_filter_exclude_event_data_t` | Emitted for each path excluded by view or ignore filters |
+#[unsafe(no_mangle)]
+pub extern "C" fn lore_revision_bisect(
+    globals: &LoreGlobalArgs,
+    args: &LoreRevisionBisectArgs,
+    callback: LoreEventCallbackConfig,
+) -> i32 {
+    run_synchronously(globals, args, callback, run_command)
+}
+
+/// Asynchronous version of `lore_revision_bisect`.
+///
+/// # Events
+///
+/// Events are delivered via the callback as `lore_event_t`. Use the `tag` field to identify the event type.
+///
+/// ## Standard Events
+///
+/// These events are emitted by all interface functions:
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_LOG` | `lore_log_event_data_t` | Diagnostic messages throughout execution |
+/// | `LORE_EVENT_ERROR` | `lore_error_event_data_t` | Emitted for a non-fatal error during the operation |
+/// | `LORE_EVENT_COMPLETE` | `lore_complete_event_data_t` | Always emitted at the end; `status` is `0` on success or the error code on failure |
+/// | `LORE_EVENT_END` | `lore_end_event_data_t` | Always emitted after `COMPLETE` to signal callback termination |
+///
+/// ## Bisect Events
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_REVISION_BISECT` | `lore_revision_bisect_event_data_t` | Emitted once the working directory is synchronized to the selected revision, with the revision numbers of the range and whether the search is done |
+///
+/// ## Sync Events
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_REVISION_SYNC_TARGET` | `lore_revision_sync_target_event_data_t` | Emitted once after resolving the selected revision |
+/// | `LORE_EVENT_REVISION_SYNC_FILE` | `lore_revision_sync_file_event_data_t` | Emitted for each file deleted, modified, added, or merged during sync |
+/// | `LORE_EVENT_REVISION_SYNC_PROGRESS` | `lore_revision_sync_progress_event_data_t` | Emitted periodically during file realization and once at completion |
+/// | `LORE_EVENT_REVISION_SYNC_REVISION` | `lore_revision_sync_revision_event_data_t` | Emitted once at the end with the resulting revision |
+/// | `LORE_EVENT_REVISION_RESOLVE` | `lore_revision_resolve_event_data_t` | Emitted when resolving a revision |
+/// | `LORE_EVENT_FILTER_EXCLUDE` | `lore_filter_exclude_event_data_t` | Emitted for each path excluded by view or ignore filters |
+#[unsafe(no_mangle)]
+pub extern "C" fn lore_revision_bisect_async(
+    globals: &LoreGlobalArgs,
+    args: &LoreRevisionBisectArgs,
+    callback: LoreEventCallbackConfig,
+) {
+    run_asynchronously(globals, args, callback, dispatch_command);
+}
+
+pub type LoreRevisionCherryPickArgs = crate::revision::LoreRevisionCherryPickArgs;
+
+/// Cherry-pick a revision onto the current branch, applying its changes to the working tree.
+///
+/// # Events
+///
+/// Events are delivered via the callback as `lore_event_t`. Use the `tag` field to identify the event type.
+///
+/// ## Standard Events
+///
+/// These events are emitted by all interface functions:
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_LOG` | `lore_log_event_data_t` | Diagnostic messages throughout execution |
+/// | `LORE_EVENT_ERROR` | `lore_error_event_data_t` | Emitted for a non-fatal error during the operation |
+/// | `LORE_EVENT_COMPLETE` | `lore_complete_event_data_t` | Always emitted at the end; `status` is `0` on success or the error code on failure |
+/// | `LORE_EVENT_END` | `lore_end_event_data_t` | Always emitted after `COMPLETE` to signal callback termination |
+///
+/// ## Cherry-Pick Events
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_CHERRY_PICK_START_BEGIN` | `lore_cherry_pick_start_begin_event_data_t` | Emitted when cherry-pick begins, includes picked revision info |
+/// | `LORE_EVENT_CHERRY_PICK_START_END` | `lore_cherry_pick_start_end_event_data_t` | Emitted when cherry-pick completes, includes conflict flag |
+/// | `LORE_EVENT_CHERRY_PICK_CONFLICT_FILE` | `lore_cherry_pick_conflict_file_event_data_t` | Emitted for each file with an unresolved cherry-pick conflict |
+/// | `LORE_EVENT_REVISION_SYNC_PROGRESS` | `lore_revision_sync_progress_event_data_t` | Emitted while the picked changes are applied |
+/// | `LORE_EVENT_REVISION_SYNC_FILE` | `lore_revision_sync_file_event_data_t` | Emitted for each file modified during cherry-pick realization |
+/// | `LORE_EVENT_FILE_STAGE_FILE` | `lore_file_stage_file_event_data_t` | Emitted for each file staged for deletion during cherry-pick |
+/// | `LORE_EVENT_REVISION_COMMIT_BEGIN` | `lore_revision_commit_begin_event_data_t` | Emitted when auto-commit starts (no conflicts) |
+/// | `LORE_EVENT_REVISION_COMMIT_PROGRESS` | `lore_revision_commit_progress_event_data_t` | Emitted during auto-commit |
+/// | `LORE_EVENT_REVISION_COMMIT_END` | `lore_revision_commit_end_event_data_t` | Emitted when auto-commit completes |
+/// | `LORE_EVENT_REVISION_COMMIT_REVISION` | `lore_revision_commit_revision_event_data_t` | Emitted with the committed cherry-pick revision |
+/// | `LORE_EVENT_METADATA` | `lore_metadata_event_data_t` | Emitted for metadata of the auto-commit |
+/// | `LORE_EVENT_FRAGMENT_WRITE` | `lore_fragment_write_event_data_t` | Emitted for fragments written during auto-commit |
+#[unsafe(no_mangle)]
+pub extern "C" fn lore_revision_cherry_pick(
+    globals: &LoreGlobalArgs,
+    args: &LoreRevisionCherryPickArgs,
+    callback: LoreEventCallbackConfig,
+) -> i32 {
+    run_synchronously(globals, args, callback, run_command)
+}
+
+/// Asynchronous version of `lore_revision_cherry_pick`.
+///
+/// # Events
+///
+/// Events are delivered via the callback as `lore_event_t`. Use the `tag` field to identify the event type.
+///
+/// ## Standard Events
+///
+/// These events are emitted by all interface functions:
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_LOG` | `lore_log_event_data_t` | Diagnostic messages throughout execution |
+/// | `LORE_EVENT_ERROR` | `lore_error_event_data_t` | Emitted for a non-fatal error during the operation |
+/// | `LORE_EVENT_COMPLETE` | `lore_complete_event_data_t` | Always emitted at the end; `status` is `0` on success or the error code on failure |
+/// | `LORE_EVENT_END` | `lore_end_event_data_t` | Always emitted after `COMPLETE` to signal callback termination |
+///
+/// ## Cherry-Pick Events
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_CHERRY_PICK_START_BEGIN` | `lore_cherry_pick_start_begin_event_data_t` | Emitted when cherry-pick begins, includes picked revision info |
+/// | `LORE_EVENT_CHERRY_PICK_START_END` | `lore_cherry_pick_start_end_event_data_t` | Emitted when cherry-pick completes, includes conflict flag |
+/// | `LORE_EVENT_CHERRY_PICK_CONFLICT_FILE` | `lore_cherry_pick_conflict_file_event_data_t` | Emitted for each file with an unresolved cherry-pick conflict |
+/// | `LORE_EVENT_REVISION_SYNC_PROGRESS` | `lore_revision_sync_progress_event_data_t` | Emitted while the picked changes are applied |
+/// | `LORE_EVENT_REVISION_SYNC_FILE` | `lore_revision_sync_file_event_data_t` | Emitted for each file modified during cherry-pick realization |
+/// | `LORE_EVENT_FILE_STAGE_FILE` | `lore_file_stage_file_event_data_t` | Emitted for each file staged for deletion during cherry-pick |
+/// | `LORE_EVENT_REVISION_COMMIT_BEGIN` | `lore_revision_commit_begin_event_data_t` | Emitted when auto-commit starts (no conflicts) |
+/// | `LORE_EVENT_REVISION_COMMIT_PROGRESS` | `lore_revision_commit_progress_event_data_t` | Emitted during auto-commit |
+/// | `LORE_EVENT_REVISION_COMMIT_END` | `lore_revision_commit_end_event_data_t` | Emitted when auto-commit completes |
+/// | `LORE_EVENT_REVISION_COMMIT_REVISION` | `lore_revision_commit_revision_event_data_t` | Emitted with the committed cherry-pick revision |
+/// | `LORE_EVENT_METADATA` | `lore_metadata_event_data_t` | Emitted for metadata of the auto-commit |
+/// | `LORE_EVENT_FRAGMENT_WRITE` | `lore_fragment_write_event_data_t` | Emitted for fragments written during auto-commit |
+#[unsafe(no_mangle)]
+pub extern "C" fn lore_revision_cherry_pick_async(
+    globals: &LoreGlobalArgs,
+    args: &LoreRevisionCherryPickArgs,
+    callback: LoreEventCallbackConfig,
+) {
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionRevertArgs = crate::revision::LoreRevisionRevertArgs;
@@ -5640,7 +5977,7 @@ pub extern "C" fn lore_revision_revert(
     args: &LoreRevisionRevertArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision::revert)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_revision_revert`.
@@ -5682,7 +6019,7 @@ pub extern "C" fn lore_revision_revert_async(
     args: &LoreRevisionRevertArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision::revert);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionRevertAbortArgs = crate::revision::LoreRevisionRevertAbortArgs;
@@ -5717,7 +6054,7 @@ pub extern "C" fn lore_revision_revert_abort(
     args: &LoreRevisionRevertAbortArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision::revert_abort)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_revision_revert_abort`.
@@ -5750,7 +6087,7 @@ pub extern "C" fn lore_revision_revert_abort_async(
     args: &LoreRevisionRevertAbortArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision::revert_abort);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionRevertUnresolveArgs = crate::revision::LoreRevisionRevertUnresolveArgs;
@@ -5784,7 +6121,7 @@ pub extern "C" fn lore_revision_revert_unresolve(
     args: &LoreRevisionRevertUnresolveArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision::revert_unresolve)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_revision_revert_unresolve`.
@@ -5816,7 +6153,7 @@ pub extern "C" fn lore_revision_revert_unresolve_async(
     args: &LoreRevisionRevertUnresolveArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision::revert_unresolve);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionRevertRestartArgs = crate::revision::LoreRevisionRevertRestartArgs;
@@ -5851,7 +6188,7 @@ pub extern "C" fn lore_revision_revert_restart(
     args: &LoreRevisionRevertRestartArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision::revert_restart)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_revision_revert_restart`.
@@ -5884,7 +6221,7 @@ pub extern "C" fn lore_revision_revert_restart_async(
     args: &LoreRevisionRevertRestartArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision::revert_restart);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionRevertResolveArgs = crate::revision::LoreRevisionRevertResolveArgs;
@@ -5918,7 +6255,7 @@ pub extern "C" fn lore_revision_revert_resolve(
     args: &LoreRevisionRevertResolveArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision::revert_resolve)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_revision_revert_resolve`.
@@ -5950,7 +6287,7 @@ pub extern "C" fn lore_revision_revert_resolve_async(
     args: &LoreRevisionRevertResolveArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision::revert_resolve);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionRevertResolveMineArgs = crate::revision::LoreRevisionRevertResolveMineArgs;
@@ -5984,12 +6321,7 @@ pub extern "C" fn lore_revision_revert_resolve_mine(
     args: &LoreRevisionRevertResolveMineArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::revision::revert_resolve_mine,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_revision_revert_resolve_mine`.
@@ -6021,12 +6353,7 @@ pub extern "C" fn lore_revision_revert_resolve_mine_async(
     args: &LoreRevisionRevertResolveMineArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::revision::revert_resolve_mine,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionRevertResolveTheirsArgs = crate::revision::LoreRevisionRevertResolveTheirsArgs;
@@ -6060,12 +6387,7 @@ pub extern "C" fn lore_revision_revert_resolve_theirs(
     args: &LoreRevisionRevertResolveTheirsArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::revision::revert_resolve_theirs,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_revision_revert_resolve_theirs`.
@@ -6097,12 +6419,7 @@ pub extern "C" fn lore_revision_revert_resolve_theirs_async(
     args: &LoreRevisionRevertResolveTheirsArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::revision::revert_resolve_theirs,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreSharedStoreCreateArgs = crate::shared_store::LoreSharedStoreCreateArgs;
@@ -6135,7 +6452,7 @@ pub extern "C" fn lore_shared_store_create(
     args: &LoreSharedStoreCreateArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::shared_store::create)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Create a new shared store at the specified path (async).
@@ -6166,7 +6483,7 @@ pub extern "C" fn lore_shared_store_create_async(
     args: &LoreSharedStoreCreateArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::shared_store::create);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreSharedStoreInfoArgs = crate::shared_store::LoreSharedStoreInfoArgs;
@@ -6199,7 +6516,7 @@ pub extern "C" fn lore_shared_store_info(
     args: &LoreSharedStoreInfoArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::shared_store::info)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Retrieve the path of the configured default shared store (async).
@@ -6230,7 +6547,71 @@ pub extern "C" fn lore_shared_store_info_async(
     args: &LoreSharedStoreInfoArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::shared_store::info);
+    run_asynchronously(globals, args, callback, dispatch_command);
+}
+
+pub type LoreSharedStoreListArgs = crate::shared_store::LoreSharedStoreListArgs;
+
+/// List every registered shared store.
+///
+/// # Events
+///
+/// Events are delivered via the callback as `lore_event_t`. Use the `tag` field to identify the event type.
+///
+/// ## Standard Events
+///
+/// These events are emitted by all interface functions:
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_LOG` | `lore_log_event_data_t` | Diagnostic messages throughout execution |
+/// | `LORE_EVENT_ERROR` | `lore_error_event_data_t` | Emitted for a non-fatal error during the operation |
+/// | `LORE_EVENT_COMPLETE` | `lore_complete_event_data_t` | Always emitted at the end; `status` is `0` on success or the error code on failure |
+/// | `LORE_EVENT_END` | `lore_end_event_data_t` | Always emitted after `COMPLETE` to signal callback termination |
+///
+/// ## Shared Store Events
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_SHARED_STORE_LIST` | `lore_shared_store_list_event_data_t` | Emitted on success carrying every registered shared store, and the instances using each when `include_instances` is set |
+#[unsafe(no_mangle)]
+pub extern "C" fn lore_shared_store_list(
+    globals: &LoreGlobalArgs,
+    args: &LoreSharedStoreListArgs,
+    callback: LoreEventCallbackConfig,
+) -> i32 {
+    run_synchronously(globals, args, callback, run_command)
+}
+
+/// List every registered shared store (async).
+///
+/// # Events
+///
+/// Events are delivered via the callback as `lore_event_t`. Use the `tag` field to identify the event type.
+///
+/// ## Standard Events
+///
+/// These events are emitted by all interface functions:
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_LOG` | `lore_log_event_data_t` | Diagnostic messages throughout execution |
+/// | `LORE_EVENT_ERROR` | `lore_error_event_data_t` | Emitted for a non-fatal error during the operation |
+/// | `LORE_EVENT_COMPLETE` | `lore_complete_event_data_t` | Always emitted at the end; `status` is `0` on success or the error code on failure |
+/// | `LORE_EVENT_END` | `lore_end_event_data_t` | Always emitted after `COMPLETE` to signal callback termination |
+///
+/// ## Shared Store Events
+///
+/// | Tag | Data Type | Description |
+/// |-----|-----------|-------------|
+/// | `LORE_EVENT_SHARED_STORE_LIST` | `lore_shared_store_list_event_data_t` | Emitted on success carrying every registered shared store, and the instances using each when `include_instances` is set |
+#[unsafe(no_mangle)]
+pub extern "C" fn lore_shared_store_list_async(
+    globals: &LoreGlobalArgs,
+    args: &LoreSharedStoreListArgs,
+    callback: LoreEventCallbackConfig,
+) {
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreSharedStoreSetUseAutomaticallyArgs =
@@ -6258,12 +6639,7 @@ pub extern "C" fn lore_shared_store_set_use_automatically(
     args: &LoreSharedStoreSetUseAutomaticallyArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::shared_store::set_use_automatically,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Set whether to automatically use the shared store (async).
@@ -6288,12 +6664,7 @@ pub extern "C" fn lore_shared_store_set_use_automatically_async(
     args: &LoreSharedStoreSetUseAutomaticallyArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::shared_store::set_use_automatically,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreStorageOpenArgs = crate::storage::open::LoreStorageOpenArgs;
@@ -6313,7 +6684,7 @@ pub extern "C" fn lore_storage_open(
     args: &LoreStorageOpenArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::storage::open::open)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Open a content-addressed storage handle (async variant).
@@ -6323,7 +6694,7 @@ pub extern "C" fn lore_storage_open_async(
     args: &LoreStorageOpenArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::storage::open::open);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreStoragePutItem = crate::storage::put::LoreStoragePutItem;
@@ -6344,7 +6715,7 @@ pub extern "C" fn lore_storage_put(
     args: &LoreStoragePutArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::storage::put::put)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Store one or more content-addressed buffers (async variant).
@@ -6354,7 +6725,7 @@ pub extern "C" fn lore_storage_put_async(
     args: &LoreStoragePutArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::storage::put::put);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreStorageGetItem = crate::storage::get::LoreStorageGetItem;
@@ -6377,7 +6748,7 @@ pub extern "C" fn lore_storage_get(
     args: &LoreStorageGetArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::storage::get::get)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Read one or more content-addressed buffers (async variant).
@@ -6387,7 +6758,7 @@ pub extern "C" fn lore_storage_get_async(
     args: &LoreStorageGetArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::storage::get::get);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreStorageGetResolvedItem = crate::storage::get_resolved::LoreStorageGetResolvedItem;
@@ -6423,12 +6794,7 @@ pub extern "C" fn lore_storage_get_resolved(
     args: &LoreStorageGetResolvedArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::get_resolved::get_resolved,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Resolve one or more mutable keys and read the content they name (async variant).
@@ -6438,12 +6804,7 @@ pub extern "C" fn lore_storage_get_resolved_async(
     args: &LoreStorageGetResolvedArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::get_resolved::get_resolved,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreStoragePutResolvedItem = crate::storage::put_resolved::LoreStoragePutResolvedItem;
@@ -6496,12 +6857,7 @@ pub extern "C" fn lore_storage_put_resolved(
     args: &LoreStoragePutResolvedArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::put_resolved::put_resolved,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Store one or more buffers and publish a mutable key naming each (async variant).
@@ -6511,12 +6867,7 @@ pub extern "C" fn lore_storage_put_resolved_async(
     args: &LoreStoragePutResolvedArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::put_resolved::put_resolved,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreStorageCloseArgs = crate::storage::close::LoreStorageCloseArgs;
@@ -6532,7 +6883,7 @@ pub extern "C" fn lore_storage_close(
     args: &LoreStorageCloseArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::storage::close::close)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Release a content-addressed storage handle (async variant).
@@ -6542,7 +6893,7 @@ pub extern "C" fn lore_storage_close_async(
     args: &LoreStorageCloseArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::storage::close::close);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreStorageFlushArgs = crate::storage::flush::LoreStorageFlushArgs;
@@ -6558,7 +6909,7 @@ pub extern "C" fn lore_storage_flush(
     args: &LoreStorageFlushArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::storage::flush::flush)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Flush pending writes through the handle's stores (async variant).
@@ -6568,7 +6919,7 @@ pub extern "C" fn lore_storage_flush_async(
     args: &LoreStorageFlushArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::storage::flush::flush);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreStorageGetMetadataItem = crate::storage::get_metadata::LoreStorageGetMetadataItem;
@@ -6591,12 +6942,7 @@ pub extern "C" fn lore_storage_get_metadata(
     args: &LoreStorageGetMetadataArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::get_metadata::get_metadata,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Fetch fragment metadata for one or more addresses (async variant).
@@ -6606,12 +6952,7 @@ pub extern "C" fn lore_storage_get_metadata_async(
     args: &LoreStorageGetMetadataArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::get_metadata::get_metadata,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreStorageObliterateArgs = crate::storage::obliterate::LoreStorageObliterateArgs;
@@ -6626,12 +6967,7 @@ pub extern "C" fn lore_storage_obliterate(
     args: &LoreStorageObliterateArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::obliterate::obliterate,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Delete content (async variant).
@@ -6641,12 +6977,7 @@ pub extern "C" fn lore_storage_obliterate_async(
     args: &LoreStorageObliterateArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::obliterate::obliterate,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreStorageMutableLoadItem = crate::storage::mutable_load::LoreStorageMutableLoadItem;
@@ -6670,12 +7001,7 @@ pub extern "C" fn lore_storage_mutable_load(
     args: &LoreStorageMutableLoadArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::mutable_load::mutable_load,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Read one or more mutable key values (async variant).
@@ -6685,12 +7011,7 @@ pub extern "C" fn lore_storage_mutable_load_async(
     args: &LoreStorageMutableLoadArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::mutable_load::mutable_load,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreStorageMutableStoreItem = crate::storage::mutable_store::LoreStorageMutableStoreItem;
@@ -6714,12 +7035,7 @@ pub extern "C" fn lore_storage_mutable_store(
     args: &LoreStorageMutableStoreArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::mutable_store::mutable_store,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Write one or more mutable key-value pairs (async variant).
@@ -6729,12 +7045,7 @@ pub extern "C" fn lore_storage_mutable_store_async(
     args: &LoreStorageMutableStoreArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::mutable_store::mutable_store,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreStorageMutableCompareAndSwapItem =
@@ -6761,12 +7072,7 @@ pub extern "C" fn lore_storage_mutable_compare_and_swap(
     args: &LoreStorageMutableCompareAndSwapArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::mutable_compare_and_swap::mutable_compare_and_swap,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Conditionally swap one or more mutable key values (async variant).
@@ -6776,12 +7082,7 @@ pub extern "C" fn lore_storage_mutable_compare_and_swap_async(
     args: &LoreStorageMutableCompareAndSwapArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::mutable_compare_and_swap::mutable_compare_and_swap,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreStorageMutableListItem = crate::storage::mutable_list::LoreStorageMutableListItem;
@@ -6806,12 +7107,7 @@ pub extern "C" fn lore_storage_mutable_list(
     args: &LoreStorageMutableListArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::mutable_list::mutable_list,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// List mutable key-value pairs (async variant).
@@ -6821,12 +7117,7 @@ pub extern "C" fn lore_storage_mutable_list_async(
     args: &LoreStorageMutableListArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::mutable_list::mutable_list,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreStorageCopyArgs = crate::storage::copy::LoreStorageCopyArgs;
@@ -6842,7 +7133,7 @@ pub extern "C" fn lore_storage_copy(
     args: &LoreStorageCopyArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::storage::copy::copy)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Copy content (async variant).
@@ -6852,7 +7143,7 @@ pub extern "C" fn lore_storage_copy_async(
     args: &LoreStorageCopyArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::storage::copy::copy);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreStoragePutFileArgs = crate::storage::put_file::LoreStoragePutFileArgs;
@@ -6868,7 +7159,7 @@ pub extern "C" fn lore_storage_put_file(
     args: &LoreStoragePutFileArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::storage::put_file::put_file)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Read files into the store (async variant).
@@ -6878,7 +7169,7 @@ pub extern "C" fn lore_storage_put_file_async(
     args: &LoreStoragePutFileArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::storage::put_file::put_file);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreStorageGetFileArgs = crate::storage::get_file::LoreStorageGetFileArgs;
@@ -6897,7 +7188,7 @@ pub extern "C" fn lore_storage_get_file(
     args: &LoreStorageGetFileArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::storage::get_file::get_file)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Write content to file (async variant).
@@ -6907,7 +7198,7 @@ pub extern "C" fn lore_storage_get_file_async(
     args: &LoreStorageGetFileArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::storage::get_file::get_file);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreStoragePutFileResolvedItem =
@@ -6948,12 +7239,7 @@ pub extern "C" fn lore_storage_put_file_resolved(
     args: &LoreStoragePutFileResolvedArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::put_file_resolved::put_file_resolved,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Store one or more files and publish a mutable key naming each (async variant).
@@ -6963,12 +7249,7 @@ pub extern "C" fn lore_storage_put_file_resolved_async(
     args: &LoreStoragePutFileResolvedArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::put_file_resolved::put_file_resolved,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreStorageGetFileResolvedItem =
@@ -7011,12 +7292,7 @@ pub extern "C" fn lore_storage_get_file_resolved(
     args: &LoreStorageGetFileResolvedArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::get_file_resolved::get_file_resolved,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Resolve mutable keys and write the content they name to files (async variant).
@@ -7026,12 +7302,7 @@ pub extern "C" fn lore_storage_get_file_resolved_async(
     args: &LoreStorageGetFileResolvedArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::storage::get_file_resolved::get_file_resolved,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreStorageUploadArgs = crate::storage::upload::LoreStorageUploadArgs;
@@ -7049,7 +7320,7 @@ pub extern "C" fn lore_storage_upload(
     args: &LoreStorageUploadArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::storage::upload::upload)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Upload deferred content (async variant).
@@ -7059,7 +7330,7 @@ pub extern "C" fn lore_storage_upload_async(
     args: &LoreStorageUploadArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::storage::upload::upload);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreServiceStartArgs = crate::service::LoreServiceStartArgs;
@@ -7090,7 +7361,7 @@ pub extern "C" fn lore_service_start(
     args: &LoreServiceStartArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::service::start)
+    run_synchronously(globals, args, callback, run_command_locally)
 }
 
 /// Asynchronous version of `lore_service_start`.
@@ -7115,7 +7386,7 @@ pub extern "C" fn lore_service_start_async(
     args: &LoreServiceStartArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::service::start);
+    run_asynchronously(globals, args, callback, invoke_locally);
 }
 
 pub type LoreServiceStopArgs = crate::service::LoreServiceStopArgs;
@@ -7145,7 +7416,7 @@ pub extern "C" fn lore_service_stop(
     args: &LoreServiceStopArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::service::stop)
+    run_synchronously(globals, args, callback, run_command_locally)
 }
 
 /// Asynchronous version of `lore_service_stop`.
@@ -7170,7 +7441,7 @@ pub extern "C" fn lore_service_stop_async(
     args: &LoreServiceStopArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::service::stop);
+    run_asynchronously(globals, args, callback, invoke_locally);
 }
 
 pub type LoreServiceSetExecutableArgs = crate::service::LoreServiceSetExecutableArgs;
@@ -7202,7 +7473,7 @@ pub extern "C" fn lore_service_set_executable(
     args: &LoreServiceSetExecutableArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::service::set_executable)
+    run_synchronously(globals, args, callback, run_command_locally)
 }
 
 /// Asynchronous version of `lore_service_set_executable`.
@@ -7227,7 +7498,7 @@ pub extern "C" fn lore_service_set_executable_async(
     args: &LoreServiceSetExecutableArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::service::set_executable);
+    run_asynchronously(globals, args, callback, invoke_locally);
 }
 
 pub type LoreServiceSetUseAutomaticallyArgs = crate::service::LoreServiceSetUseAutomaticallyArgs;
@@ -7258,12 +7529,7 @@ pub extern "C" fn lore_service_set_use_automatically(
     args: &LoreServiceSetUseAutomaticallyArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::service::set_use_automatically,
-    )
+    run_synchronously(globals, args, callback, run_command_locally)
 }
 
 /// Asynchronous version of `lore_service_set_use_automatically`.
@@ -7288,12 +7554,7 @@ pub extern "C" fn lore_service_set_use_automatically_async(
     args: &LoreServiceSetUseAutomaticallyArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::service::set_use_automatically,
-    );
+    run_asynchronously(globals, args, callback, invoke_locally);
 }
 
 pub type LoreNotificationSubscribeArgs = crate::notification::LoreNotificationSubscribeArgs;
@@ -7331,7 +7592,7 @@ pub extern "C" fn lore_notification_subscribe(
     args: &LoreNotificationSubscribeArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::notification::subscribe)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_notification_subscribe`.
@@ -7367,7 +7628,7 @@ pub extern "C" fn lore_notification_subscribe_async(
     args: &LoreNotificationSubscribeArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::notification::subscribe);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreNotificationUnsubscribeArgs = crate::notification::LoreNotificationUnsubscribeArgs;
@@ -7400,7 +7661,7 @@ pub extern "C" fn lore_notification_unsubscribe(
     args: &LoreNotificationUnsubscribeArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::notification::unsubscribe)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_notification_unsubscribe`.
@@ -7431,7 +7692,7 @@ pub extern "C" fn lore_notification_unsubscribe_async(
     args: &LoreNotificationUnsubscribeArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::notification::unsubscribe);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 /// Apply the given logging configuration.
@@ -7542,13 +7803,12 @@ pub extern "C" fn lore_set_allocator(
     }
 }
 
-/// Return the library version as a NUL-terminated string. The string is owned
-/// by the library and must not be freed by the caller.
+/// Return the library version as a NUL-terminated string: `LORE_INTERFACE_VERSION`,
+/// then `+` and the build name. The string is owned by the library and must not
+/// be freed by the caller.
 #[unsafe(no_mangle)]
 pub extern "C" fn lore_version() -> *const std::ffi::c_char {
-    lore_base::version::LORE_LIBRARY_VERSION_CSTR
-        .as_ptr()
-        .cast::<std::ffi::c_char>()
+    lore_base::version::LORE_LIBRARY_VERSION_CSTR.as_ptr()
 }
 
 pub fn user_directory() -> Option<PathBuf> {
@@ -7579,7 +7839,7 @@ pub extern "C" fn lore_repository_metadata_get(
     args: &LoreRepositoryMetadataGetArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::repository::metadata_get)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_repository_metadata_get`.
@@ -7589,7 +7849,7 @@ pub extern "C" fn lore_repository_metadata_get_async(
     args: &LoreRepositoryMetadataGetArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::repository::metadata_get);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRepositoryMetadataSetArgs = crate::repository::LoreRepositoryMetadataSetArgs;
@@ -7601,7 +7861,7 @@ pub extern "C" fn lore_repository_metadata_set(
     args: &LoreRepositoryMetadataSetArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::repository::metadata_set)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_repository_metadata_set`.
@@ -7611,7 +7871,7 @@ pub extern "C" fn lore_repository_metadata_set_async(
     args: &LoreRepositoryMetadataSetArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::repository::metadata_set);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRepositoryMetadataClearArgs = crate::repository::LoreRepositoryMetadataClearArgs;
@@ -7624,7 +7884,7 @@ pub extern "C" fn lore_repository_metadata_clear(
     args: &LoreRepositoryMetadataClearArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::repository::metadata_clear)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_repository_metadata_clear`.
@@ -7634,7 +7894,7 @@ pub extern "C" fn lore_repository_metadata_clear_async(
     args: &LoreRepositoryMetadataClearArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::repository::metadata_clear);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRepositoryInstanceListArgs = crate::repository::LoreRepositoryInstanceListArgs;
@@ -7646,7 +7906,7 @@ pub extern "C" fn lore_repository_instance_list(
     args: &LoreRepositoryInstanceListArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::repository::instance_list)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_repository_instance_list`.
@@ -7656,7 +7916,7 @@ pub extern "C" fn lore_repository_instance_list_async(
     args: &LoreRepositoryInstanceListArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::repository::instance_list);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRepositoryInstancePruneArgs = crate::repository::LoreRepositoryInstancePruneArgs;
@@ -7672,7 +7932,7 @@ pub extern "C" fn lore_repository_instance_prune(
     args: &LoreRepositoryInstancePruneArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::repository::instance_prune)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_repository_instance_prune`.
@@ -7682,7 +7942,7 @@ pub extern "C" fn lore_repository_instance_prune_async(
     args: &LoreRepositoryInstancePruneArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::repository::instance_prune);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRepositoryUpdatePathArgs = crate::repository::LoreRepositoryUpdatePathArgs;
@@ -7695,12 +7955,7 @@ pub extern "C" fn lore_repository_update_path(
     args: &LoreRepositoryUpdatePathArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::repository::repository_update_path,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_repository_update_path`.
@@ -7710,12 +7965,7 @@ pub extern "C" fn lore_repository_update_path_async(
     args: &LoreRepositoryUpdatePathArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::repository::repository_update_path,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRepositoryConfigGetArgs = crate::repository::LoreRepositoryConfigGetArgs;
@@ -7727,7 +7977,7 @@ pub extern "C" fn lore_repository_config_get(
     args: &LoreRepositoryConfigGetArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::repository::config_get)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Asynchronous version of `lore_repository_config_get`.
@@ -7737,7 +7987,7 @@ pub extern "C" fn lore_repository_config_get_async(
     args: &LoreRepositoryConfigGetArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::repository::config_get);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionTreeLoadArgs = crate::revision_tree::load::LoreRevisionTreeLoadArgs;
@@ -7755,7 +8005,7 @@ pub extern "C" fn lore_revision_tree_load(
     args: &LoreRevisionTreeLoadArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision_tree::load::load)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Open a memory-based revision tree handle (async variant).
@@ -7765,7 +8015,7 @@ pub extern "C" fn lore_revision_tree_load_async(
     args: &LoreRevisionTreeLoadArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision_tree::load::load);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionTreeCloseArgs = crate::revision_tree::close::LoreRevisionTreeCloseArgs;
@@ -7785,7 +8035,7 @@ pub extern "C" fn lore_revision_tree_close(
     args: &LoreRevisionTreeCloseArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision_tree::close::close)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Release a memory-based revision tree handle (async variant).
@@ -7795,7 +8045,7 @@ pub extern "C" fn lore_revision_tree_close_async(
     args: &LoreRevisionTreeCloseArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision_tree::close::close);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionTreeResolvePathArgs =
@@ -7813,12 +8063,7 @@ pub extern "C" fn lore_revision_tree_resolve_path(
     args: &LoreRevisionTreeResolvePathArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::resolve_path::resolve_path,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Resolve a UTF-8 path against a loaded revision tree (async variant).
@@ -7828,12 +8073,7 @@ pub extern "C" fn lore_revision_tree_resolve_path_async(
     args: &LoreRevisionTreeResolvePathArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::resolve_path::resolve_path,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionTreeListChildrenArgs =
@@ -7850,12 +8090,7 @@ pub extern "C" fn lore_revision_tree_list_children(
     args: &LoreRevisionTreeListChildrenArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::list_children::list_children,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Stream the children of a directory node (async variant).
@@ -7865,12 +8100,7 @@ pub extern "C" fn lore_revision_tree_list_children_async(
     args: &LoreRevisionTreeListChildrenArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::list_children::list_children,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionTreeNodeInfoArgs =
@@ -7887,12 +8117,7 @@ pub extern "C" fn lore_revision_tree_node_info(
     args: &LoreRevisionTreeNodeInfoArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::node_info::node_info,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Fetch the per-node record for a single node id (async variant).
@@ -7902,12 +8127,7 @@ pub extern "C" fn lore_revision_tree_node_info_async(
     args: &LoreRevisionTreeNodeInfoArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::node_info::node_info,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionTreeInfoArgs = crate::revision_tree::info::LoreRevisionTreeInfoArgs;
@@ -7924,7 +8144,7 @@ pub extern "C" fn lore_revision_tree_info(
     args: &LoreRevisionTreeInfoArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision_tree::info::info)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Fetch the loaded revision's record-level metadata (async variant).
@@ -7934,7 +8154,7 @@ pub extern "C" fn lore_revision_tree_info_async(
     args: &LoreRevisionTreeInfoArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision_tree::info::info);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionTreeNodePathArgs =
@@ -7952,12 +8172,7 @@ pub extern "C" fn lore_revision_tree_node_path(
     args: &LoreRevisionTreeNodePathArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::node_path::node_path,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Reconstruct the full UTF-8 path for a node id (async variant).
@@ -7967,12 +8182,7 @@ pub extern "C" fn lore_revision_tree_node_path_async(
     args: &LoreRevisionTreeNodePathArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::node_path::node_path,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionTreeAddArgs = crate::revision_tree::add::LoreRevisionTreeAddArgs;
@@ -7999,7 +8209,7 @@ pub extern "C" fn lore_revision_tree_add(
     args: &LoreRevisionTreeAddArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision_tree::add::add)
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Add a batch of nodes to a loaded revision tree (async variant).
@@ -8009,7 +8219,7 @@ pub extern "C" fn lore_revision_tree_add_async(
     args: &LoreRevisionTreeAddArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision_tree::add::add);
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionTreeDeleteArgs = crate::revision_tree::delete::LoreRevisionTreeDeleteArgs;
@@ -8056,12 +8266,7 @@ pub extern "C" fn lore_revision_tree_delete(
     args: &LoreRevisionTreeDeleteArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::delete::delete,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Remove a batch of subtrees from a loaded revision tree (async variant).
@@ -8071,12 +8276,7 @@ pub extern "C" fn lore_revision_tree_delete_async(
     args: &LoreRevisionTreeDeleteArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::delete::delete,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionTreeModifyArgs = crate::revision_tree::modify::LoreRevisionTreeModifyArgs;
@@ -8105,12 +8305,7 @@ pub extern "C" fn lore_revision_tree_modify(
     args: &LoreRevisionTreeModifyArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::modify::modify,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Rewrite a batch of file nodes in a loaded revision tree (async variant).
@@ -8120,12 +8315,7 @@ pub extern "C" fn lore_revision_tree_modify_async(
     args: &LoreRevisionTreeModifyArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::modify::modify,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionTreeMoveArgs = crate::revision_tree::move_node::LoreRevisionTreeMoveArgs;
@@ -8172,12 +8362,7 @@ pub extern "C" fn lore_revision_tree_move(
     args: &LoreRevisionTreeMoveArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::move_node::move_node,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Move a batch of nodes in a loaded revision tree (async variant).
@@ -8187,12 +8372,7 @@ pub extern "C" fn lore_revision_tree_move_async(
     args: &LoreRevisionTreeMoveArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::move_node::move_node,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionTreeMetadataSetArgs =
@@ -8244,12 +8424,7 @@ pub extern "C" fn lore_revision_tree_metadata_set(
     args: &LoreRevisionTreeMetadataSetArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::metadata_set::metadata_set,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Record a batch of metadata pairs on a loaded revision tree (async variant).
@@ -8259,12 +8434,7 @@ pub extern "C" fn lore_revision_tree_metadata_set_async(
     args: &LoreRevisionTreeMetadataSetArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::metadata_set::metadata_set,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionTreeMetadataGetArgs =
@@ -8308,12 +8478,7 @@ pub extern "C" fn lore_revision_tree_metadata_get(
     args: &LoreRevisionTreeMetadataGetArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::metadata_get::metadata_get,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Read a batch of metadata values from a loaded revision tree (async variant).
@@ -8323,12 +8488,7 @@ pub extern "C" fn lore_revision_tree_metadata_get_async(
     args: &LoreRevisionTreeMetadataGetArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::metadata_get::metadata_get,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionTreeMetadataClearArgs =
@@ -8360,12 +8520,7 @@ pub extern "C" fn lore_revision_tree_metadata_clear(
     args: &LoreRevisionTreeMetadataClearArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::metadata_clear::metadata_clear,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Remove a batch of metadata keys from a loaded revision tree (async variant).
@@ -8375,12 +8530,7 @@ pub extern "C" fn lore_revision_tree_metadata_clear_async(
     args: &LoreRevisionTreeMetadataClearArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::metadata_clear::metadata_clear,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 pub type LoreRevisionTreeCommitArgs = crate::revision_tree::commit::LoreRevisionTreeCommitArgs;
@@ -8451,12 +8601,7 @@ pub extern "C" fn lore_revision_tree_commit(
     args: &LoreRevisionTreeCommitArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::commit::commit,
-    )
+    run_synchronously(globals, args, callback, run_command)
 }
 
 /// Freeze a loaded revision tree into a new revision (async variant).
@@ -8466,12 +8611,7 @@ pub extern "C" fn lore_revision_tree_commit_async(
     args: &LoreRevisionTreeCommitArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(
-        globals,
-        args,
-        callback,
-        crate::revision_tree::commit::commit,
-    );
+    run_asynchronously(globals, args, callback, dispatch_command);
 }
 
 /// Select how payloads are compressed before they are stored, over

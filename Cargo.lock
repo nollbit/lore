@@ -2488,17 +2488,11 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 name = "lore"
 version = "0.10.1-nightly"
 dependencies = [
- "anyhow",
  "bitcode",
- "blake3",
  "bytes",
- "cbindgen",
- "cc",
  "chrono",
  "ctor",
  "dashmap",
- "enum_dispatch",
- "glob",
  "libc",
  "lore-base",
  "lore-credential",
@@ -2511,7 +2505,6 @@ dependencies = [
  "lore-transport",
  "parking_lot",
  "rand",
- "regex",
  "serde",
  "serde_json",
  "serial_test",
@@ -2519,7 +2512,6 @@ dependencies = [
  "tokio",
  "toml 0.9.12+spec-1.1.0",
  "uuid",
- "vergen",
  "windows-sys 0.61.2",
 ]
 
@@ -2569,7 +2561,6 @@ dependencies = [
 name = "lore-base"
 version = "0.10.1-nightly"
 dependencies = [
- "anyhow",
  "backtrace",
  "bitcode",
  "bitflags",
@@ -2580,6 +2571,7 @@ dependencies = [
  "directories",
  "hex",
  "libc",
+ "lore-base",
  "lore-error-set",
  "lore-io",
  "parking_lot",
@@ -2591,9 +2583,20 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "uuid",
- "vergen",
  "windows-sys 0.61.2",
  "zerocopy",
+]
+
+[[package]]
+name = "lore-capi"
+version = "0.10.1-nightly"
+dependencies = [
+ "blake3",
+ "cbindgen",
+ "cc",
+ "glob",
+ "lore",
+ "regex",
 ]
 
 [[package]]
@@ -2619,7 +2622,6 @@ version = "0.10.1-nightly"
 dependencies = [
  "anstream 0.6.21",
  "anstyle",
- "anyhow",
  "chrono",
  "clap",
  "clap-markdown",
@@ -2632,7 +2634,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
- "vergen",
  "windows-sys 0.61.2",
  "winresource",
 ]
@@ -2772,7 +2773,7 @@ dependencies = [
 
 [[package]]
 name = "lore-proto"
-version = "0.1.63"
+version = "0.1.64"
 dependencies = [
  "lore-base",
  "prost",
@@ -2948,6 +2949,7 @@ dependencies = [
  "lz4-sys",
  "opentelemetry",
  "parking_lot",
+ "pin-project",
  "rand",
  "serde",
  "smallvec",
