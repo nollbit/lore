@@ -454,7 +454,7 @@ pub async fn store_user_token(
         auth_endpoint,
         identity,
         token,
-        None,
+        RefreshTokenUpdate::Preserve,
         acceptable_root_domains,
     )
     .await
@@ -471,22 +471,27 @@ pub async fn store_user_credentials(
         auth_endpoint,
         identity,
         token,
-        Some(refresh_token),
+        RefreshTokenUpdate::Replace(refresh_token),
         acceptable_root_domains,
     )
     .await
+}
+
+enum RefreshTokenUpdate<'a> {
+    Preserve,
+    Replace(Option<&'a str>),
 }
 
 async fn store_credentials(
     auth_endpoint: &str,
     identity: &str,
     token: &str,
-    refresh_token: Option<Option<&str>>,
+    refresh_token: RefreshTokenUpdate<'_>,
     mut acceptable_root_domains: Vec<String>,
 ) -> Result<(), TokenStoreError> {
-    let encrypted_refresh = match refresh_token.flatten() {
-        Some(refresh) => Some(encrypt_token(refresh).await?),
-        None => None,
+    let encrypted_refresh = match refresh_token {
+        RefreshTokenUpdate::Replace(Some(refresh)) => Some(encrypt_token(refresh).await?),
+        RefreshTokenUpdate::Preserve | RefreshTokenUpdate::Replace(None) => None,
     };
     let auth_endpoint = auth_endpoint.trim_end_matches('/');
 
@@ -528,7 +533,7 @@ async fn store_credentials(
                 // Preserve existing refresh token when updating the auth token
                 let existing_refresh = remote.token[existing_index].refresh_token.take();
                 let mut new_token = identity_token;
-                if refresh_token.is_none() {
+                if matches!(refresh_token, RefreshTokenUpdate::Preserve) {
                     new_token.refresh_token = existing_refresh;
                 }
                 remote.token[existing_index] = new_token;

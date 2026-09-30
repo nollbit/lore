@@ -4,6 +4,8 @@ on:
     branches: [server-branch-protection, repository-acl, upstream-integration, 'updates/**']
 permissions:
   contents: read
+env:
+  CARGO_BUILD_JOBS: 2
 jobs:
   server:
     strategy:
@@ -20,6 +22,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libssl-dev pkg-config clang cmake
       - name: Install Rust
         run: rustup toolchain install 1.98.1 --profile minimal && rustup override set 1.98.1
+      - uses: Swatinem/rust-cache@v2
       - name: Test branch guards
         run: cargo test --locked -p lore-server --lib
       - name: Test authentication renewal
@@ -43,6 +46,7 @@ jobs:
         run: brew install protobuf
       - name: Install Rust
         run: rustup toolchain install 1.98.1 --profile minimal && rustup override set 1.98.1
+      - uses: Swatinem/rust-cache@v2
       - name: Test authentication renewal
         run: cargo test --locked -p lore-transport --test refresh
       - name: Build client

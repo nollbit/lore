@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Epic Games, Inc.
 // SPDX-License-Identifier: MIT
 //! Server-owned branch guards and revision-scoped landing identities.
-use lore_base::types::Hash;
-use lore_revision::lore::{BranchId, RepositoryId};
-use serde::Deserialize;
 use std::sync::OnceLock;
+
+use lore_base::types::Hash;
+use lore_revision::lore::BranchId;
+use lore_revision::lore::RepositoryId;
+use serde::Deserialize;
 use tonic::Status;
 
 #[derive(Clone, Deserialize)]
