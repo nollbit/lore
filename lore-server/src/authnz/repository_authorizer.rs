@@ -167,7 +167,7 @@ impl dyn RepositoryAuthorizer {
                 .check_repository_access(token, repository_id, Some(action))
                 .await
                 .map(|()| None)
-                .map_err(|_| crate::grpc::no_repository_access_status()),
+                .map_err(|_error| crate::grpc::no_repository_access_status()),
             _ => Err(crate::grpc::no_repository_access_status()),
         }
     }

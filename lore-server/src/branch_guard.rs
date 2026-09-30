@@ -41,7 +41,7 @@ fn guards() -> Result<&'static [Guard], Status> {
         })
         .as_ref()
         .map(|g| g.as_slice())
-        .map_err(|_| Status::failed_precondition("Invalid server branch guard configuration"))
+        .map_err(|_error| Status::failed_precondition("Invalid server branch guard configuration"))
 }
 fn valid_id(value: &str) -> bool {
     value.len() == 32
