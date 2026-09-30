@@ -163,10 +163,7 @@ async fn stream_tree(
         let node = thin_client_v1::TreeNode {
             path: tree_path.path.to_string(),
             node_type: node_flags_to_node_type(tree_path.flags) as i32,
-            address: tree_path.address.map(|address| model_v1::Address {
-                hash: address.hash.into(),
-                context: address.context.into(),
-            }),
+            address: tree_path.address.map(model_v1::Address::from),
             size: tree_path.size,
             mode: tree_path.mode,
             tracking: tree_path.tracking,
@@ -284,7 +281,7 @@ mod test {
                 .await
                 .expect("serialize metadata");
 
-            let state = Arc::new(state::State::new());
+            let state = state::State::new();
             state.set_parent_self(parent);
             state.set_revision_number((idx + 1) as u64);
             state.set_metadata_hash(metadata_hash);
@@ -349,7 +346,7 @@ mod test {
             .await
             .expect("serialize metadata");
 
-        let state = Arc::new(state::State::new());
+        let state = state::State::new();
         state.set_parent_self(Hash::default());
         state.set_revision_number(1);
         state.set_metadata_hash(metadata_hash);
@@ -456,7 +453,7 @@ mod test {
             .await
             .expect("serialize metadata");
 
-        let state = Arc::new(state::State::new());
+        let state = state::State::new();
         state.set_parent_self(Hash::default());
         state.set_revision_number(1);
         state.set_metadata_hash(metadata_hash);
@@ -1496,7 +1493,7 @@ mod test {
                 .await
                 .expect("serialize metadata");
 
-            let state = Arc::new(state::State::new());
+            let state = state::State::new();
             state.set_parent_self(Hash::default());
             state.set_revision_number(1);
             state.set_metadata_hash(metadata_hash);

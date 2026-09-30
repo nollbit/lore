@@ -1512,6 +1512,8 @@ class Lore:
         targets: str | None = None,
         revision: str | None = None,
         last_merged_from: str | None = None,
+        mine: bool = False,
+        theirs: bool = False,
         **kwargs: Unpack[GlobalOptions],
     ):
         paths = self._fix_paths(paths)
@@ -1521,7 +1523,9 @@ class Lore:
             + (["--purge"] if purge else [])
             + (["--targets", targets] if targets else [])
             + (["--revision", revision] if revision else [])
-            + (["--last-merged-from", last_merged_from] if last_merged_from else []),
+            + (["--last-merged-from", last_merged_from] if last_merged_from else [])
+            + (["--mine"] if mine else [])
+            + (["--theirs"] if theirs else []),
             **kwargs,
         )
 
@@ -1775,6 +1779,19 @@ class Lore:
 
         return self._capi_driver(library_path, "auth-user-info", self.path, *user_ids)
 
+    def branch_latest_list_capi(
+        self, library_path: str, keep_store_alive_seconds: int = 0
+    ) -> int:
+        """List the current branch's LATEST history through the public C API,
+        returning the FFI code. The stores are held open for
+        `keep_store_alive_seconds` after the call, none if `0`."""
+        return self._capi_driver(
+            library_path,
+            "branch-latest-list",
+            self.path,
+            str(keep_store_alive_seconds),
+        )
+
     def service_capi(self, library_path: str, command: str) -> int:
         """Start or stop the service through the public C API, returning the FFI
         code. `command` is `service-start` or `service-stop`.
@@ -1786,6 +1803,13 @@ class Lore:
         """
         return self._capi_driver(library_path, command)
 
+    def repository_delete_capi(self, library_path: str) -> int:
+        """Delete this repository's remote through the public C API, returning
+        the FFI code."""
+        return self._capi_driver(
+            library_path, "repository-delete", self.path, self.remote_path
+        )
+
     def revision_sync_capi(self, library_path: str, view: str = "") -> int:
         """Sync through the public C API, returning the FFI code.
 
@@ -1795,6 +1819,21 @@ class Lore:
         for, and the library reads them out of memory that consumer allocated.
         """
         return self._capi_driver(library_path, "revision-sync", self.path, view)
+
+    def revision_bisect_capi(
+        self, library_path: str, start: str, end: str, keep_store_alive_seconds: int = 0
+    ) -> int:
+        """Take a bisect step through the public C API, returning the FFI code.
+        The stores are held open for `keep_store_alive_seconds` after the call,
+        none if `0`."""
+        return self._capi_driver(
+            library_path,
+            "revision-bisect",
+            self.path,
+            start,
+            end,
+            str(keep_store_alive_seconds),
+        )
 
     def layer_add(
         self,
@@ -2121,6 +2160,8 @@ class Lore:
         targets: str | None = None,
         revision: str | None = None,
         last_merged_from: str | None = None,
+        mine: bool = False,
+        theirs: bool = False,
         **kwargs: Unpack[GlobalOptions],
     ):
         paths = self._fix_paths(paths)
@@ -2130,7 +2171,9 @@ class Lore:
             + (["--purge"] if purge else [])
             + (["--targets", targets] if targets else [])
             + (["--revision", revision] if revision else [])
-            + (["--last-merged-from", last_merged_from] if last_merged_from else []),
+            + (["--last-merged-from", last_merged_from] if last_merged_from else [])
+            + (["--mine"] if mine else [])
+            + (["--theirs"] if theirs else []),
             **kwargs,
         )
 

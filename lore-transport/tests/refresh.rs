@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 use lore_base::types::RepositoryId;
 use lore_credential::token_store;
-use lore_transport::auth::{authentication, exchange::load_authentication_token};
+use lore_transport::auth::authentication;
+use lore_transport::auth::exchange::load_authentication_token;
 use lore_transport::error::ProtocolError;
 use lore_transport::traits::Authentication;
 use lore_transport::types::*;
@@ -79,7 +80,6 @@ impl Authentication for Provider {
     ) -> Result<AuthorizationToken, ProtocolError> {
         unreachable!()
     }
-
 }
 
 #[tokio::test]

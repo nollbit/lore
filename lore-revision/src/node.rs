@@ -1369,7 +1369,7 @@ impl NodeBlock {
             return Ok(());
         }
 
-        Box::pin(async move { self.deserialize_nametable_impl(repository).await }).await
+        Box::pin(self.deserialize_nametable_impl(repository)).await
     }
 
     async fn deserialize_nametable_impl(
@@ -1411,6 +1411,9 @@ impl NodeBlock {
         lock.node_name_repack();
     }
 
+    /// Reads the node block at `address`, falling back to the older block formats when it does not
+    /// read as the current one. The fallback is boxed, as only older repositories and failed reads
+    /// take it.
     pub async fn deserialize(
         repository: Arc<RepositoryContext>,
         state: &State,
@@ -1429,7 +1432,7 @@ impl NodeBlock {
             block_data.flags &= !NodeBlockFlags::DeferRepackNametable;
             Ok(NodeBlock::new(block_data))
         } else {
-            Self::deserialize_other_version(repository, state, address).await
+            Box::pin(Self::deserialize_other_version(repository, state, address)).await
         }
     }
 
@@ -1970,9 +1973,10 @@ pub const BLOCK_NODE_FILE_METADATA_COUNT: usize = BLOCK_NODE_COUNT;
 /// Old block count before the metadata block was extended to 512 elements
 const BLOCK_NODE_FILE_METADATA_COUNT_V0: usize = 511;
 
-/// Block of file metadata, 65568 bytes, 32 bytes metadata, 512 blocks of 128 bytes each
+/// Block of file metadata, 65568 bytes, 32 bytes metadata, 512 blocks of 128 bytes each.
+/// Not `Copy`: at 64 KiB, an implicit copy puts the whole block on the stack.
 #[repr(C)]
-#[derive(Clone, Copy, IntoBytes, FromBytes, Immutable)]
+#[derive(Clone, IntoBytes, FromBytes, Immutable)]
 pub struct NodeFileMetadataBlockData {
     /// Block flags
     pub flags: u32,
@@ -1987,9 +1991,10 @@ pub struct NodeFileMetadataBlockData {
 impl ReadBoxFromImmutable for NodeFileMetadataBlockData {}
 block_payload_on_tree_heap!(NodeFileMetadataBlockData, ZeroHeapAlloc, CloneHeapAlloc);
 
-/// Legacy block of file metadata with 511 elements (old format before extension to 512)
+/// Legacy block of file metadata with 511 elements (old format before extension to 512).
+/// Not `Copy`: at 64 KiB, an implicit copy puts the whole block on the stack.
 #[repr(C)]
-#[derive(Clone, Copy, IntoBytes, FromBytes, Immutable)]
+#[derive(IntoBytes, FromBytes, Immutable)]
 struct NodeFileMetadataBlockDataV0 {
     flags: u32,
     version: u32,
@@ -2003,7 +2008,7 @@ block_payload_on_tree_heap!(NodeFileMetadataBlockDataV0, ZeroHeapAlloc);
 impl NodeFileMetadataBlockDataV0 {
     /// Convert the old 511-element block into the current 512-element format.
     /// The last element is zero-initialized.
-    fn into_current(self) -> HeapBox<NodeFileMetadataBlockData> {
+    fn to_current(&self) -> HeapBox<NodeFileMetadataBlockData> {
         let mut block = NodeFileMetadataBlockData::new_from_heap_zeroed();
         block.flags = self.flags;
         block.version = self.version;
@@ -2029,7 +2034,7 @@ impl NodeFileMetadataBlockData {
                 )
                 .await
                 {
-                    Ok(old_block) => Ok(old_block.into_current()),
+                    Ok(old_block) => Ok(old_block.to_current()),
                     Err(_) => Err(original_err),
                 }
             }
@@ -2170,6 +2175,34 @@ impl NodeFileMetadataBlockWriter<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A legacy block keeps its flags, version and 511 entries, and the entry the
+    /// current format adds is zero.
+    #[test]
+    fn a_legacy_file_metadata_block_converts_to_the_current_format() {
+        let mut legacy = NodeFileMetadataBlockDataV0::new_from_heap_zeroed();
+        legacy.flags = 3;
+        legacy.version = 7;
+        for (index, entry) in legacy.node.iter_mut().enumerate() {
+            entry.node = [index as u32 + 1, 0];
+        }
+
+        let current = legacy.to_current();
+
+        assert_eq!((current.flags, current.version), (3, 7));
+        for (index, entry) in current.node[..BLOCK_NODE_FILE_METADATA_COUNT_V0]
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(entry.node, [index as u32 + 1, 0], "entry {index}");
+        }
+        assert!(
+            current.node[BLOCK_NODE_FILE_METADATA_COUNT_V0..]
+                .iter()
+                .all(|entry| entry.as_bytes().iter().all(|&byte| byte == 0)),
+            "the added entry is zero"
+        );
+    }
 
     fn node_with_flags(flags: u16) -> Node {
         Node {

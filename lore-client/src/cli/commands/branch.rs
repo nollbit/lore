@@ -8,17 +8,17 @@ use std::sync::atomic::Ordering;
 use chrono::DateTime;
 use clap::Args;
 use clap::Subcommand;
-use lore::branch;
-use lore::branch::LoreBranchLatestListArgs;
 use lore::branch::LoreBranchMetadataClearArgs;
 use lore::branch::LoreBranchMetadataGetArgs;
 use lore::branch::LoreBranchMetadataSetArgs;
+use lore::call_delegation::run_command;
 use lore::interface::Context;
 use lore::interface::LoreArray;
 use lore::interface::LoreBranchArchiveArgs;
 use lore::interface::LoreBranchCreateArgs;
 use lore::interface::LoreBranchDiffArgs;
 use lore::interface::LoreBranchInfoArgs;
+use lore::interface::LoreBranchLatestListArgs;
 use lore::interface::LoreBranchListArgs;
 use lore::interface::LoreBranchLocation;
 use lore::interface::LoreBranchMergeAbortArgs;
@@ -39,7 +39,6 @@ use lore::interface::LoreGlobalArgs;
 use lore::interface::LoreMetadataType;
 use lore::interface::LoreString;
 use lore::interface::Partition;
-use lore::runtime;
 use parking_lot::Mutex;
 
 use crate::cli::EventCallbackExt;
@@ -554,7 +553,7 @@ fn handle_branch_latest_list(globals: LoreGlobalArgs, args: &BranchLatestListArg
         }) as EventCallbackFn)
             .with_defaults(),
     ));
-    return runtime().block_on(branch::latest_list(globals, args, callback)) as u8;
+    return run_command(globals, args.into(), callback) as u8;
 }
 
 fn handle_branch_create(globals: LoreGlobalArgs, args: &BranchCreateArgs) -> u8 {
@@ -619,7 +618,7 @@ fn handle_branch_create(globals: LoreGlobalArgs, args: &BranchCreateArgs) -> u8 
             .with_defaults(),
     ));
 
-    return runtime().block_on(branch::create(globals, create_args, callback)) as u8;
+    return run_command(globals, create_args.into(), callback) as u8;
 }
 
 fn handle_branch_info(globals: LoreGlobalArgs, args: &BranchInfoArgs) -> u8 {
@@ -645,7 +644,7 @@ fn handle_branch_info(globals: LoreGlobalArgs, args: &BranchInfoArgs) -> u8 {
             .with_defaults(),
     ));
 
-    let status = runtime().block_on(branch::info(globals.clone(), info_args, callback)) as u8;
+    let status = run_command(globals.clone(), info_args.into(), callback) as u8;
 
     if status != 0 {
         return status;
@@ -793,7 +792,7 @@ fn handle_branch_switch(globals: LoreGlobalArgs, args: &BranchSwitchArgs) -> u8 
             .with_defaults(),
     ));
 
-    return runtime().block_on(branch::switch(globals, switch_args, callback)) as u8;
+    return run_command(globals, switch_args.into(), callback) as u8;
 }
 
 pub fn handle_branch_push(globals: LoreGlobalArgs, args: &BranchPushArgs) -> u8 {
@@ -958,7 +957,7 @@ pub fn handle_branch_push(globals: LoreGlobalArgs, args: &BranchPushArgs) -> u8 
             .with_defaults(),
     ));
 
-    return runtime().block_on(branch::push(globals, push_args, callback)) as u8;
+    return run_command(globals, push_args.into(), callback) as u8;
 }
 
 fn handle_branch_merge_unresolve(globals: LoreGlobalArgs, args: &BranchMergeUnresolveArgs) -> u8 {
@@ -1003,11 +1002,7 @@ fn handle_branch_merge_unresolve(globals: LoreGlobalArgs, args: &BranchMergeUnre
             .with_defaults(),
     ));
 
-    return runtime().block_on(branch::merge_unresolve(
-        globals,
-        merge_unresolve_args,
-        callback,
-    )) as u8;
+    return run_command(globals, merge_unresolve_args.into(), callback) as u8;
 }
 
 fn handle_branch_merge_into(globals: LoreGlobalArgs, args: &BranchMergeIntoArgs) -> u8 {
@@ -1080,7 +1075,7 @@ fn handle_branch_merge_into(globals: LoreGlobalArgs, args: &BranchMergeIntoArgs)
             .with_defaults(),
     ));
 
-    return runtime().block_on(branch::merge_into(globals, merge_into_args, callback)) as u8;
+    return run_command(globals, merge_into_args.into(), callback) as u8;
 }
 
 fn handle_branch_merge_start(globals: LoreGlobalArgs, args: &BranchMergeStartArgs) -> u8 {
@@ -1143,7 +1138,7 @@ fn handle_branch_merge_start(globals: LoreGlobalArgs, args: &BranchMergeStartArg
             .with_defaults(),
     ));
 
-    return runtime().block_on(branch::merge_start(globals, merge_start_args, callback)) as u8;
+    return run_command(globals, merge_start_args.into(), callback) as u8;
 }
 
 fn handle_branch_merge_resolve(globals: LoreGlobalArgs, args: &BranchMergeResolveArgs) -> u8 {
@@ -1212,7 +1207,7 @@ fn handle_branch_merge_resolve_impl(
             .with_defaults(),
     ));
 
-    return runtime().block_on(branch::merge_resolve(globals, merge_resolve_args, callback)) as u8;
+    return run_command(globals, merge_resolve_args.into(), callback) as u8;
 }
 
 fn handle_branch_merge_resolve_mine(
@@ -1234,11 +1229,7 @@ fn handle_branch_merge_resolve_mine(
             .with_defaults(),
     ));
 
-    return runtime().block_on(branch::merge_resolve_mine(
-        globals,
-        merge_resolve_mine_args,
-        callback,
-    )) as u8;
+    return run_command(globals, merge_resolve_mine_args.into(), callback) as u8;
 }
 
 fn handle_branch_merge_resolve_theirs(
@@ -1260,11 +1251,7 @@ fn handle_branch_merge_resolve_theirs(
             .with_defaults(),
     ));
 
-    return runtime().block_on(branch::merge_resolve_theirs(
-        globals,
-        merge_resolve_theirs_args,
-        callback,
-    )) as u8;
+    return run_command(globals, merge_resolve_theirs_args.into(), callback) as u8;
 }
 
 fn handle_branch_merge_restart(globals: LoreGlobalArgs, args: &BranchMergeRestartArgs) -> u8 {
@@ -1283,7 +1270,7 @@ fn handle_branch_merge_restart(globals: LoreGlobalArgs, args: &BranchMergeRestar
             .with_defaults(),
     ));
 
-    return runtime().block_on(branch::merge_restart(globals, merge_restart_args, callback)) as u8;
+    return run_command(globals, merge_restart_args.into(), callback) as u8;
 }
 
 fn handle_branch_merge_abort(globals: LoreGlobalArgs, args: &BranchMergeAbortArgs) -> u8 {
@@ -1321,7 +1308,7 @@ fn handle_branch_merge_abort(globals: LoreGlobalArgs, args: &BranchMergeAbortArg
             .with_defaults(),
     ));
 
-    return runtime().block_on(branch::merge_abort(globals, merge_abort_args, callback)) as u8;
+    return run_command(globals, merge_abort_args.into(), callback) as u8;
 }
 
 pub fn handle_branch_merge(globals: LoreGlobalArgs, args: &BranchMergeArgs) -> u8 {
@@ -1444,7 +1431,7 @@ pub fn handle_branch_list(globals: LoreGlobalArgs, args: &BranchListArgs) -> u8 
             .with_defaults(),
     ));
 
-    return runtime().block_on(branch::list(globals, list_args, callback)) as u8;
+    return run_command(globals, list_args.into(), callback) as u8;
 }
 
 pub fn handle_branch_diff(globals: LoreGlobalArgs, args: &BranchDiffArgs) -> u8 {
@@ -1539,7 +1526,7 @@ pub fn handle_branch_diff(globals: LoreGlobalArgs, args: &BranchDiffArgs) -> u8 
             .with_defaults(),
     ));
 
-    return runtime().block_on(branch::diff(globals, diff_args, callback)) as u8;
+    return run_command(globals, diff_args.into(), callback) as u8;
 }
 
 pub fn handle_branch_protect(globals: LoreGlobalArgs, args: &BranchProtectArgs) -> u8 {
@@ -1566,7 +1553,7 @@ pub fn handle_branch_protect(globals: LoreGlobalArgs, args: &BranchProtectArgs) 
             .with_defaults(),
     ));
 
-    return runtime().block_on(branch::protect(globals, protect_args, callback)) as u8;
+    return run_command(globals, protect_args.into(), callback) as u8;
 }
 
 pub fn handle_branch_unprotect(globals: LoreGlobalArgs, args: &BranchUnprotectArgs) -> u8 {
@@ -1593,7 +1580,7 @@ pub fn handle_branch_unprotect(globals: LoreGlobalArgs, args: &BranchUnprotectAr
             .with_defaults(),
     ));
 
-    return runtime().block_on(branch::unprotect(globals, unprotect_args, callback)) as u8;
+    return run_command(globals, unprotect_args.into(), callback) as u8;
 }
 
 pub fn handle_branch_archive(globals: LoreGlobalArgs, args: &BranchArchiveArgs) -> u8 {
@@ -1624,7 +1611,7 @@ pub fn handle_branch_archive(globals: LoreGlobalArgs, args: &BranchArchiveArgs) 
             .with_defaults(),
     ));
 
-    return runtime().block_on(branch::archive(globals, archive_args, callback)) as u8;
+    return run_command(globals, archive_args.into(), callback) as u8;
 }
 
 pub fn handle_branch_reset(globals: LoreGlobalArgs, args: &BranchResetArgs) -> u8 {
@@ -1655,7 +1642,7 @@ pub fn handle_branch_reset(globals: LoreGlobalArgs, args: &BranchResetArgs) -> u
             .with_defaults(),
     ));
 
-    return runtime().block_on(branch::reset(globals, reset_args, callback)) as u8;
+    return run_command(globals, reset_args.into(), callback) as u8;
 }
 
 fn resolve_branch_arg(branch: &Option<String>) -> LoreString {
@@ -1682,7 +1669,7 @@ pub fn handle_branch_metadata_get(globals: LoreGlobalArgs, args: &BranchMetadata
             .with_defaults(),
     ));
 
-    runtime().block_on(branch::metadata_get(globals, get_args, callback)) as u8
+    run_command(globals, get_args.into(), callback) as u8
 }
 
 pub fn handle_branch_metadata_set(globals: LoreGlobalArgs, args: &BranchMetadataSetArgs) -> u8 {
@@ -1734,7 +1721,7 @@ pub fn handle_branch_metadata_set(globals: LoreGlobalArgs, args: &BranchMetadata
             .with_defaults(),
     ));
 
-    runtime().block_on(branch::metadata_set(globals, set_args, callback)) as u8
+    run_command(globals, set_args.into(), callback) as u8
 }
 
 pub fn handle_branch_metadata_clear(globals: LoreGlobalArgs, args: &BranchMetadataClearArgs) -> u8 {
@@ -1760,7 +1747,7 @@ pub fn handle_branch_metadata_clear(globals: LoreGlobalArgs, args: &BranchMetada
             .with_defaults(),
     ));
 
-    runtime().block_on(branch::metadata_clear(globals, clear_args, callback)) as u8
+    run_command(globals, clear_args.into(), callback) as u8
 }
 
 pub fn handle_branch_metadata_commands(

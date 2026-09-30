@@ -830,16 +830,15 @@ mod test {
             .serialize(repository.clone())
             .await
             .expect("serialize metadata");
-        let state = Arc::new(state::State::new());
+        let state = state::State::new();
         state.set_parent_self(parent);
         state.set_revision_number(revision_number);
         state.set_metadata_hash(metadata_hash);
         for (name, bytes) in files {
-            let buffer = bytes::Bytes::copy_from_slice(bytes);
             let address = lore_revision::immutable::write(
                 repository.clone(),
                 lore_storage::Context::default(),
-                buffer,
+                bytes::Bytes::copy_from_slice(bytes),
                 lore_storage::WriteOptions::default(),
             )
             .await

@@ -101,7 +101,7 @@ where
     let _guard = token_store::lock_refresh().await.map_err(load)?;
     let token = token_store::load_user_token_from_store(auth_url, identity, &mut filter)
         .await
-        .map_err(|_| ExchangeError::from(NotAuthenticated))?;
+        .map_err(|_error| ExchangeError::from(NotAuthenticated))?;
     let info = lore_credential::user_info_from_token(token.clone())
         .ok_or_else(|| ExchangeError::from(NotAuthenticated))?;
     if !is_expired(info.expires) {
@@ -109,7 +109,7 @@ where
     }
     let refresh = token_store::load_refresh_token(auth_url, identity)
         .await
-        .map_err(|_| ExchangeError::from(NotAuthenticated))?;
+        .map_err(|_error| ExchangeError::from(NotAuthenticated))?;
     let provider = authentication::find(auth_url)
         .forward::<ExchangeError>("finding authentication provider")?;
     let renewed = provider
@@ -123,8 +123,8 @@ where
     if info.id != identity || renewed.user_id != identity || is_expired(info.expires) {
         return Err(NotAuthenticated.into());
     }
-    let decoded =
-        insecure_decode_token(&renewed.token).map_err(|_| ExchangeError::from(NotAuthenticated))?;
+    let decoded = insecure_decode_token(&renewed.token)
+        .map_err(|_error| ExchangeError::from(NotAuthenticated))?;
     verify_jwt_usage_for_remote(&decoded.claims, &get_domain_or_empty(auth_url))
         .forward::<ExchangeError>("verifying refreshed token recipient")?;
     token_store::store_user_credentials(
