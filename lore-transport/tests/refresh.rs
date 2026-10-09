@@ -27,7 +27,7 @@ impl Authentication for Provider {
         _client_state: &str,
         _session_code: &str,
         _correlation_id: &str,
-    ) -> Result<Option<AuthenticationToken>, ProtocolError> {
+    ) -> Result<AuthSessionPoll, ProtocolError> {
         unreachable!()
     }
     async fn exchange_external_token(
@@ -60,6 +60,7 @@ impl Authentication for Provider {
             expires_ms: 2_000_000_000_000,
             acceptable_root_domains: vec!["example.com".into()],
             refresh_token: Some("refresh-two".into()),
+            scope: None,
         })
     }
     async fn exchange_for_repository(

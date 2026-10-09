@@ -7,18 +7,17 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use lore_base::lore_spawn;
 use lore_error_set::prelude::*;
-use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
+use crate::MAX_CONCURRENT_TREE_TASKS;
 use crate::branch;
 use crate::change;
 use crate::errors::*;
@@ -44,6 +43,7 @@ use crate::lore::RepositoryId;
 use crate::lore::execution_context;
 use crate::lore_debug;
 use crate::lore_error;
+use crate::lore_limit_drain_tasks;
 use crate::lore_trace;
 use crate::node::INVALID_NODE;
 use crate::node::Node;
@@ -56,17 +56,17 @@ use crate::node::ROOT_NODE;
 use crate::path::emit_path_ignore;
 use crate::progress::max_concurrent_stage_directory_tasks;
 use crate::repository::BASE_SUFFIX;
-use crate::repository::DOT_LORE;
-use crate::repository::DOT_URC;
 use crate::repository::RepositoryContext;
 use crate::repository::RepositoryWriteToken;
 use crate::repository::TEMP_FILE_EXTENSION;
 use crate::repository::THEIRS_SUFFIX;
+use crate::repository::is_reserved_node_name;
 use crate::revision::sync;
 use crate::revision::sync::SyncRealizeStats;
 use crate::state;
 use crate::state::NodeMapping;
 use crate::state::State;
+use crate::state::StateNodeChildrenIterator;
 use crate::state::StateNodeChildrenWithNameIterator;
 use crate::state::file_modified_against_node;
 use crate::util;
@@ -75,7 +75,7 @@ use crate::util::path::RelativePathBuf;
 
 /// Data for the event emitted when a stage operation begins.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreFileStageBeginEventData {
     /// Number of paths requested for staging.
@@ -84,7 +84,7 @@ pub struct LoreFileStageBeginEventData {
 
 /// Running counts of items processed during a stage operation.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreFileStageCountData {
     /// Number of directories staged as modified.
@@ -140,7 +140,7 @@ impl LoreFileStageCountData {
 
 /// Data for the progress event emitted periodically during a stage operation.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreFileStageProgressEventData {
     /// Current counts of items processed.
@@ -149,7 +149,7 @@ pub struct LoreFileStageProgressEventData {
 
 /// Data for the event emitted when a stage operation completes.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreFileStageEndEventData {
     /// Final counts of items processed.
@@ -158,7 +158,7 @@ pub struct LoreFileStageEndEventData {
 
 /// Data for the event identifying the repository and revision involved in a stage operation.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreFileStageRevisionEventData {
     /// Identifier of the repository.
@@ -169,7 +169,7 @@ pub struct LoreFileStageRevisionEventData {
 
 /// Data for the event emitted for each file affected by a stage operation.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreFileStageFileEventData {
     /// Previous path of the file, when it was moved, relative to the root of the working tree.
@@ -323,15 +323,197 @@ pub(crate) async fn process_link_updates(
         .forward::<StageError>("Failed to update link")
 }
 
-/// Entries a walk found behind a nested-repository boundary, for
-/// [`state::apply_pending_discards`] to drop once the walk has drained.
+/// Entries a walk leaves for [`state::apply_pending_discards`] to drop once it has
+/// drained: those found behind a nested-repository boundary, and those neither the
+/// file system nor any commit holds.
 ///
 /// Collected rather than discarded where they are found: the discard rewrites the
 /// sibling chains the walk's own tasks are still reading. The ids index one state,
 /// so a walk crossing into a linked state carries `None` from there on, as does a
 /// caller that reconciles nothing against the file system: a boundary is still
-/// skipped, only an entry an earlier walk left indexed is left in place.
-pub(crate) type PendingDiscards = Option<Arc<Mutex<Vec<NodeID>>>>;
+/// skipped and an absent entry is staged as a delete, only an entry this would
+/// drop is left in place.
+pub(crate) type PendingDiscards = Option<Arc<DiscardQueue>>;
+
+/// See [`PendingDiscards`].
+pub(crate) struct DiscardQueue {
+    /// The revision the staged tree is based on, which holds every entry a
+    /// commit covers.
+    committed: Arc<State>,
+    nodes: parking_lot::Mutex<Vec<NodeID>>,
+}
+
+impl DiscardQueue {
+    /// An empty queue for a staged tree based on `committed`.
+    pub(crate) fn new(committed: Arc<State>) -> Self {
+        Self {
+            committed,
+            nodes: parking_lot::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn push(&self, node: NodeID) {
+        self.nodes.lock().push(node);
+    }
+
+    /// The entries queued, leaving the queue empty.
+    pub(crate) fn take(&self) -> Vec<NodeID> {
+        std::mem::take(&mut *self.nodes.lock())
+    }
+}
+
+/// Whether the committed tree holds `node`, which the staged tree holds at `id`.
+///
+/// Decided by the node's slot rather than its name. The staged tree is derived from the
+/// committed one and never moves a node to another slot, so a committed node keeps its id
+/// however it has since been respelled, moved or staged for delete, and one of the same name
+/// staging added beside it, as a type change does, takes a slot of its own. The kind has to
+/// match as well, since a slot the staged tree freed can be reused. The file id is not
+/// compared: syncs and merges overwrite a committed file's address, its file id included.
+///
+/// A slot past the committed tree's blocks is not committed. A block within them that fails to
+/// load fails the call.
+async fn is_committed(
+    committed: &State,
+    repository: &Arc<RepositoryContext>,
+    id: NodeID,
+    node: &Node,
+) -> Result<bool, StageError> {
+    if id == ROOT_NODE {
+        return Ok(true);
+    }
+    let block_index = NodeBlock::index(id);
+    let block_count = committed
+        .tree(repository.clone())
+        .await
+        .forward::<StageError>("Failed to read the committed tree")?
+        .block_count as usize;
+    if block_index >= block_count {
+        return Ok(false);
+    }
+    let block = committed
+        .block(repository.clone(), block_index)
+        .await
+        .forward::<StageError>("Failed to read the committed node block")?;
+    let reader = block.read();
+    let index = Node::index(id);
+    Ok(reader.is_node_in_use(index) && reader.node(index).node_type() == node.node_type())
+}
+
+/// Whether `node`, which the staged tree holds at `id`, and its subtree can leave the staged tree
+/// instead of being staged for delete: none of it is committed, a link or a merge entry, which
+/// carry a registry entry and flags only a staged delete settles.
+async fn drops_cleanly(
+    committed: &State,
+    repository: &Arc<RepositoryContext>,
+    state: &Arc<State>,
+    id: NodeID,
+    node: &Node,
+) -> Result<bool, StageError> {
+    if !drops_alone(committed, repository, id, node).await? {
+        return Ok(false);
+    }
+    if !node.is_directory() {
+        return Ok(true);
+    }
+
+    let mut directories = vec![(id, *node)];
+    while let Some((directory, directory_node)) = directories.pop() {
+        let mut children = StateNodeChildrenIterator::from_parent(
+            state.clone(),
+            repository.clone(),
+            directory,
+            &directory_node,
+        )
+        .await
+        .forward::<StageError>("Failed to list the staged directory")?;
+        while let Some((child, child_node)) = children
+            .next()
+            .await
+            .forward::<StageError>("Failed to list the staged directory")?
+        {
+            if !drops_alone(committed, repository, child, &child_node).await? {
+                return Ok(false);
+            }
+            if child_node.is_directory() {
+                directories.push((child, child_node));
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Whether `node`, which the staged tree holds at `id`, drops cleanly, leaving aside what is
+/// below it.
+async fn drops_alone(
+    committed: &State,
+    repository: &Arc<RepositoryContext>,
+    id: NodeID,
+    node: &Node,
+) -> Result<bool, StageError> {
+    Ok(!node.is_link()
+        && !node.is_staged_merge()
+        && !is_committed(committed, repository, id, node).await?)
+}
+
+/// Whether the file system holds `path` in any spelling that folds to it, which is how a walk
+/// matches entries to nodes. Only a path found missing is absent: a probe that fails for another
+/// reason counts as present, so nothing is dropped on it.
+async fn is_on_disk(operation: &InstanceOperationImpl, path: &RelativePath) -> bool {
+    !matches!(
+        util::fs::filesystem_path_and_info(operation, "", path, None).await,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
+/// The staged node to drop for `path`, which the staged tree holds as `node`: of the nodes from
+/// `node` up to the first ancestor that is committed or on disk, the shallowest that
+/// [drops cleanly](drops_cleanly). `None` where `node` itself is committed or on disk, or where
+/// none drops cleanly, which leaves a delete to stage.
+///
+/// `path` is taken from the root of the state `node` indexes, so it crosses no link.
+async fn uncommitted_absent_root(
+    operation: &InstanceOperationImpl,
+    repository: &Arc<RepositoryContext>,
+    state: &Arc<State>,
+    committed: &State,
+    node: NodeID,
+    path: &RelativePath,
+) -> Result<Option<NodeID>, StageError> {
+    let leaf = state
+        .node(repository.clone(), node)
+        .await
+        .forward::<StageError>("Failed to resolve the staged node")?;
+    if is_committed(committed, repository, node, &leaf).await? || is_on_disk(operation, path).await
+    {
+        return Ok(None);
+    }
+
+    let mut parent = leaf.parent;
+    let mut chain = vec![(node, leaf)];
+    let mut ancestor_path = path.clone();
+    while parent != ROOT_NODE {
+        ancestor_path.pop_name();
+        let parent_node = state
+            .node(repository.clone(), parent)
+            .await
+            .forward::<StageError>("Failed to resolve the staged node")?;
+        if is_committed(committed, repository, parent, &parent_node).await?
+            || is_on_disk(operation, &ancestor_path).await
+        {
+            break;
+        }
+        chain.push((parent, parent_node));
+        parent = parent_node.parent;
+    }
+
+    for &(id, ref candidate) in chain.iter().rev() {
+        if drops_cleanly(committed, repository, state, id, candidate).await? {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
 
 /// Whether no commit covers the child the parent tree holds as `held`, which is
 /// what makes a `.lore/` inside it a nested working copy rather than parent
@@ -470,7 +652,9 @@ pub(crate) async fn stage_filesystem_path(
                 stats.clone(),
                 link_tracker.clone(),
                 layer_mask.clone(),
-                discards.clone(),
+                discards
+                    .clone()
+                    .filter(|_| descent.repository.id == repository.id),
                 descent.states,
             )
             .await;
@@ -497,6 +681,23 @@ pub(crate) async fn stage_filesystem_path(
         .find_relative_node_link(repository.clone(), base.node, remainder_path.as_str())
         .await
     {
+        if node_link.repository == repository.id
+            && let Some(queue) = discards.as_deref()
+            && let Some(root) = uncommitted_absent_root(
+                &operation,
+                &repository,
+                &state,
+                &queue.committed,
+                node_link.node,
+                &full_relative_path,
+            )
+            .await?
+        {
+            lore_debug!("Path {full_relative_path} was never committed, dropping it");
+            queue.push(root);
+            return Ok(NodeLink::default());
+        }
+
         let mut current_repository = repository.clone();
         let node_state = if node_link.repository != repository.id {
             current_repository = repository.to_link_context(node_link.repository).await;
@@ -529,7 +730,7 @@ pub(crate) async fn stage_filesystem_path(
             "Path {} exist in repository, stage deletion",
             full_relative_path
         );
-        stage_delete(
+        stage_absent_delete(
             current_repository.clone(),
             node_state,
             full_relative_path.clone(),
@@ -737,6 +938,7 @@ impl StageDescent {
     }
 }
 
+#[lore_macro::test_pub]
 pub(crate) async fn stage_single_node(
     repository: Arc<RepositoryContext>,
     state: Arc<State>,
@@ -1053,15 +1255,17 @@ async fn mark_staged_node_dirty(
         .forward::<StageError>("Failed to mark staged node as dirty")
 }
 
-pub(crate) async fn stage_delete(
-    repository: Arc<RepositoryContext>,
-    state: Arc<State>,
-    relative_path: RelativePath,
+/// Mark `node_id` staged for deletion, reporting the node when this call is the one that
+/// marked it so a caller walking the subtree knows whether it still has work below.
+async fn stage_delete_node(
+    repository: &Arc<RepositoryContext>,
+    state: &Arc<State>,
+    relative_path: &RelativePath,
     node_id: NodeID,
     node_flags: NodeFlags,
-    stats: Arc<StageStats>,
-    link_tracker: Option<Arc<crate::link::LinkTracker>>,
-) -> Result<(), StageError> {
+    stats: &Arc<StageStats>,
+    link_tracker: Option<&Arc<crate::link::LinkTracker>>,
+) -> Result<Option<Node>, StageError> {
     let block_index = NodeBlock::index(node_id);
     let node_index = Node::index(node_id);
     let block = state
@@ -1071,7 +1275,7 @@ pub(crate) async fn stage_delete(
 
     let node = block.node(node_index);
     if node.is_staged_delete() {
-        return Ok(());
+        return Ok(None);
     }
 
     lore_debug!("Stage delete of node {}", node_id);
@@ -1089,7 +1293,7 @@ pub(crate) async fn stage_delete(
         stats.file_delete_count.fetch_add(1, Ordering::Relaxed);
         event::LoreEvent::FileStageFile(LoreFileStageFileEventData {
             from_path: LoreString::default(),
-            path: LoreString::from(&relative_path),
+            path: LoreString::from(relative_path),
             action: LoreFileAction::Delete,
         })
         .send();
@@ -1110,16 +1314,42 @@ pub(crate) async fn stage_delete(
 
     mark_staged_node_dirty(
         repository.clone(),
-        &state,
+        state,
         node_id,
         NodeFlags::DirtyDelete,
         node_flags,
     )
     .await?;
 
-    if let Some(ref tracker) = link_tracker {
-        tracker.on_node_changed(&repository);
+    if let Some(tracker) = link_tracker {
+        tracker.on_node_changed(repository);
     }
+
+    Ok(Some(node))
+}
+
+pub(crate) async fn stage_delete(
+    repository: Arc<RepositoryContext>,
+    state: Arc<State>,
+    relative_path: RelativePath,
+    node_id: NodeID,
+    node_flags: NodeFlags,
+    stats: Arc<StageStats>,
+    link_tracker: Option<Arc<crate::link::LinkTracker>>,
+) -> Result<(), StageError> {
+    let Some(node) = stage_delete_node(
+        &repository,
+        &state,
+        &relative_path,
+        node_id,
+        node_flags,
+        &stats,
+        link_tracker.as_ref(),
+    )
+    .await?
+    else {
+        return Ok(());
+    };
 
     // Note that links do not need to recurse into directory, as the subtree exist in
     // the link state tree and not this state tree
@@ -1164,6 +1394,109 @@ fn stage_delete_recurse(
     link_tracker: Option<Arc<crate::link::LinkTracker>>,
 ) -> Pin<Box<dyn Future<Output = Result<(), StageError>> + Send>> {
     Box::pin(stage_delete(
+        repository,
+        state,
+        relative_path,
+        node_id,
+        node_flags,
+        stats,
+        link_tracker,
+    ))
+}
+
+/// Stage the deletion of `node_id`, which the file system does not hold, and report whether
+/// a link kept part of it.
+///
+/// A mount stays absent while the linked repository cannot be read, so the link and every
+/// directory on its path stay. A node already staged for deletion keeps nothing.
+async fn stage_absent_delete(
+    repository: Arc<RepositoryContext>,
+    state: Arc<State>,
+    relative_path: RelativePath,
+    node_id: NodeID,
+    node_flags: NodeFlags,
+    stats: Arc<StageStats>,
+    link_tracker: Option<Arc<crate::link::LinkTracker>>,
+) -> Result<bool, StageError> {
+    let node = state
+        .node(repository.clone(), node_id)
+        .await
+        .forward::<StageError>("Failed deserializing state node block")?;
+
+    if node.is_staged_delete() {
+        return Ok(false);
+    }
+
+    if node.is_link() {
+        lore_debug!("Link mount {relative_path} is absent from the file system, keeping the link");
+        return Ok(true);
+    }
+
+    if !node.is_directory() {
+        stage_delete_node(
+            &repository,
+            &state,
+            &relative_path,
+            node_id,
+            node_flags,
+            &stats,
+            link_tracker.as_ref(),
+        )
+        .await?;
+        return Ok(false);
+    }
+
+    let mut children =
+        StateNodeChildrenWithNameIterator::new(state.clone(), repository.clone(), node_id)
+            .await
+            .forward::<StageError>("Failed to list directory node children")?;
+
+    let mut kept_link = false;
+    while let Some((child_node_id, _child_node, child_name)) = children
+        .next()
+        .await
+        .forward::<StageError>("Failed to list directory node children")?
+    {
+        let child_path = relative_path.join(child_name);
+        kept_link |= stage_absent_delete_recurse(
+            repository.clone(),
+            state.clone(),
+            child_path,
+            child_node_id,
+            node_flags,
+            stats.clone(),
+            link_tracker.clone(),
+        )
+        .await?;
+    }
+
+    if kept_link {
+        return Ok(true);
+    }
+
+    stage_delete_node(
+        &repository,
+        &state,
+        &relative_path,
+        node_id,
+        node_flags,
+        &stats,
+        link_tracker.as_ref(),
+    )
+    .await?;
+    Ok(false)
+}
+
+fn stage_absent_delete_recurse(
+    repository: Arc<RepositoryContext>,
+    state: Arc<State>,
+    relative_path: RelativePath,
+    node_id: NodeID,
+    node_flags: NodeFlags,
+    stats: Arc<StageStats>,
+    link_tracker: Option<Arc<crate::link::LinkTracker>>,
+) -> Pin<Box<dyn Future<Output = Result<bool, StageError>> + Send>> {
+    Box::pin(stage_absent_delete(
         repository,
         state,
         relative_path,
@@ -1302,6 +1635,7 @@ async fn resolve_case_variant_collisions(
 ///
 /// Ties are held in sibling order: two names differing only in case hash the
 /// same, and a claim takes the first child not already claimed.
+#[lore_macro::test_pub]
 struct DirectoryChildren {
     /// Child node ids in sibling order, [`INVALID_NODE`] where a file system
     /// entry has claimed the child.
@@ -1318,6 +1652,7 @@ struct DirectoryChildren {
 impl DirectoryChildren {
     /// The children of a directory node in sibling order, with the name hash
     /// each of them carries.
+    #[lore_macro::test_pub]
     fn new(child: Vec<(NodeID, u64)>) -> Self {
         let listing_head = child.first().map(|&(node, _)| node);
         let mut by_name_hash: Vec<(u64, u32, NodeID)> = child
@@ -1348,6 +1683,7 @@ impl DirectoryChildren {
     /// The first child carrying `name_hash` that nothing has claimed yet, marked
     /// as claimed. `None` where the directory holds no such child, or holds only
     /// ones already claimed.
+    #[lore_macro::test_pub]
     fn claim(&mut self, name_hash: u64) -> Option<NodeID> {
         let (index, node) = self
             .matching(name_hash)
@@ -1359,12 +1695,14 @@ impl DirectoryChildren {
     /// The first child the listing holds carrying `name_hash`, claimed or not,
     /// which is the one a search of the chain reaches once past what was linked
     /// into it since.
+    #[lore_macro::test_pub]
     fn holds(&self, name_hash: u64) -> Option<NodeID> {
         self.matching(name_hash).next().map(|(_, node)| node)
     }
 
     /// The children no file system entry claimed, in sibling order. Each one is a
     /// path the tree holds and the file system does not.
+    #[lore_macro::test_pub]
     fn unclaimed(&self) -> impl Iterator<Item = NodeID> + '_ {
         self.node
             .iter()
@@ -1465,7 +1803,13 @@ pub(crate) async fn stage_directory(
     // result depending on iteration order.
     let mut items: Vec<DirectoryEntry> = Vec::new();
     while let Some(item) = file_list.next().await {
-        items.push(item.forward_any::<StageError>("Unusable directory entry")?);
+        let item = item.forward_any::<StageError>("Unusable directory entry")?;
+        // The repository's own directory is not content, so it takes no part in the case
+        // resolution below, which moves what the losers of a collision hold on disk.
+        if is_reserved_node_name(&item.name) {
+            continue;
+        }
+        items.push(item);
     }
 
     resolve_case_variant_collisions(
@@ -1560,10 +1904,8 @@ pub(crate) async fn stage_directory(
                     // unclaimed pass below does not stage a delete against a base
                     // the parent never committed, and is queued for discard so
                     // the tree stops holding what the boundary excludes.
-                    if let (Some(node), Some(discards)) = (claimed, discards.as_ref())
-                        && let Ok(mut queued) = discards.lock()
-                    {
-                        queued.push(node);
+                    if let (Some(node), Some(discards)) = (claimed, discards.as_deref()) {
+                        discards.push(node);
                     }
 
                     continue;
@@ -1721,11 +2063,12 @@ pub(crate) async fn stage_directory(
             break;
         }
         let node_name = match state
-            .node_name_ref(repository.clone(), child)
+            .node_name_ref_or_skip(repository.clone(), child)
             .await
             .forward::<StageError>("Failed to resolve node name")
         {
-            Ok(node_name) => node_name,
+            Ok(Some(node_name)) => node_name,
+            Ok(None) => continue,
             Err(err) => {
                 failure = Some(err);
                 break;
@@ -1744,7 +2087,32 @@ pub(crate) async fn stage_directory(
             continue;
         }
 
-        let result = stage_delete(
+        if let Some(queue) = discards.as_deref() {
+            let dropped = match state
+                .node(repository.clone(), child)
+                .await
+                .forward::<StageError>("Failed to resolve the child node")
+            {
+                Ok(node) => {
+                    drops_cleanly(&queue.committed, &repository, &state, child, &node).await
+                }
+                Err(err) => Err(err),
+            };
+            match dropped {
+                Ok(true) => {
+                    lore_trace!("Node was never committed, dropping it: {filter_path}");
+                    queue.push(child);
+                    continue;
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    failure = Some(err);
+                    break;
+                }
+            }
+        }
+
+        let result = stage_absent_delete(
             repository.clone(),
             state.clone(),
             filter_path.clone().freeze(),
@@ -2027,7 +2395,7 @@ pub(crate) async fn stage_node_from_metadata(
         });
     }
 
-    if name == DOT_URC || name == DOT_LORE {
+    if is_reserved_node_name(&name) {
         lore_trace!("Ignore dot directory {name}");
         return Ok(StagedChild::invalid());
     }
@@ -2625,6 +2993,15 @@ pub(crate) async fn stage_from_parent_revision(
     .await
 }
 
+/// Stages `paths` from the revision `merge_parent` names: a file is restored and staged here,
+/// and a directory's changes are found and staged by [`stage_from_parent_state`], in a task per
+/// directory.
+///
+/// The directory tasks and the change tasks below them draw on one budget of
+/// [`MAX_CONCURRENT_TREE_TASKS`] permits, so that many tasks are live at most whatever the shape
+/// of the resolved tree. A directory waits for a permit here, where nothing waited on needs one;
+/// a change below a directory runs inline when none is free, since the directory's task holds
+/// one itself.
 async fn stage_from_parent_revision_in_operation(
     operation: Arc<InstanceOperationImpl>,
     repository: Arc<RepositoryContext>,
@@ -2804,6 +3181,11 @@ async fn stage_from_parent_revision_in_operation(
     }
 
     let stats = Arc::new(StageStats::default());
+    #[cfg(not(feature = "test-util"))]
+    let permits = MAX_CONCURRENT_TREE_TASKS;
+    #[cfg(feature = "test-util")]
+    let permits = resolve_tasks::budget();
+    let budget = Arc::new(Semaphore::new(permits));
     let mut tasks = JoinSet::new();
     let dispatch_result: Result<(), StageError> = async {
         for relative_path in resolved_paths {
@@ -3055,11 +3437,10 @@ async fn stage_from_parent_revision_in_operation(
                 // Restoring to a merge parent leaves content the current revision does not
                 // hold, so the times it lands with state nothing and are left to drop with
                 // the operation.
-                let restore_path = relative_path.clone();
                 crate::fs::realize::realize_file(
                     repository.clone(),
                     operation.clone(),
-                    &restore_path,
+                    relative_path.clone(),
                     node,
                     Arc::new(SyncRealizeStats::default()),
                 )
@@ -3083,13 +3464,22 @@ async fn stage_from_parent_revision_in_operation(
                     sync::unlink_merge_artifacts(&operation, &relative_path).await;
                 }
             } else {
+                let permit = budget.clone().acquire_owned().await.map_err(|err| {
+                    StageError::internal_with_context(err, "The task budget is closed")
+                })?;
+                #[cfg(feature = "test-util")]
+                let live = resolve_tasks::Live::enter();
                 lore_spawn!(tasks, {
                     let operation = operation.clone();
                     let repository = repository.clone();
                     let state = state.clone();
                     let state_target = state_target.clone();
                     let stats = stats.clone();
+                    let budget = budget.clone();
                     async move {
+                        let _permit = permit;
+                        #[cfg(feature = "test-util")]
+                        let _live = live;
                         stage_from_parent_state(
                             operation,
                             repository.clone(),
@@ -3100,10 +3490,18 @@ async fn stage_from_parent_revision_in_operation(
                             target_node_link.node,
                             options,
                             stats,
+                            budget,
                         )
                         .await
                     }
                 });
+                // Reaps the tasks that have finished and stops dispatch at the first failure;
+                // the budget is what bounds the tasks live.
+                lore_limit_drain_tasks!(
+                    tasks,
+                    MAX_CONCURRENT_TREE_TASKS,
+                    StageError::internal("Failed to join task")
+                )?;
             }
         }
         Ok::<(), StageError>(())
@@ -3441,11 +3839,10 @@ pub(crate) async fn stage_link_paths_from_parent_revision(
                 // `link_context.path` shares the parent's path and
                 // `mount_path` is parent-relative, so realizing through the
                 // link context writes to `<parent>/<mount>/<file>`.
-                let restore_path = mount_path.clone();
                 crate::fs::realize::realize_file(
                     group.link_context.clone(),
                     operation.clone(),
-                    &restore_path,
+                    mount_path.clone(),
                     node_t,
                     Arc::new(SyncRealizeStats::default()),
                 )
@@ -3538,6 +3935,11 @@ async fn stage_realized_delete(
     .await
 }
 
+/// Finds the changes between the working tree and `state_target` below `relative_path`, restores
+/// the target's content, and stages each change in a task drawn from `budget`, the budget shared
+/// with the directory tasks of [`stage_from_parent_revision_in_operation`]. A change runs inline
+/// when no permit is free, never waiting for one: this task holds a permit itself, and directory
+/// tasks each waiting for a permit a change needs would wait on each other.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn stage_from_parent_state(
     operation: Arc<InstanceOperationImpl>,
@@ -3549,6 +3951,7 @@ pub(crate) async fn stage_from_parent_state(
     node_id_target: NodeID,
     options: StageOptions,
     stats: Arc<StageStats>,
+    budget: Arc<Semaphore>,
 ) -> Result<(), StageError> {
     let block_index = NodeBlock::index(node_id_target);
     let node_index = Node::index(node_id_target);
@@ -3672,7 +4075,9 @@ pub(crate) async fn stage_from_parent_state(
             let stats = stats.clone();
             let file_path = change.path().clone();
             let operation = operation.clone();
-            lore_spawn!(tasks, async move {
+            let stage_change = async move {
+                #[cfg(feature = "test-util")]
+                resolve_tasks::wait_if_held().await;
                 let info = operation
                     .file_info(&file_path)
                     .await
@@ -3702,7 +4107,26 @@ pub(crate) async fn stage_from_parent_state(
                 )
                 .await
                 .map(|_| ())
-            });
+            };
+            if let Ok(permit) = budget.clone().try_acquire_owned() {
+                #[cfg(feature = "test-util")]
+                let live = resolve_tasks::Live::enter();
+                lore_spawn!(tasks, async move {
+                    let _permit = permit;
+                    #[cfg(feature = "test-util")]
+                    let _live = live;
+                    stage_change.await
+                });
+            } else {
+                stage_change.await?;
+            }
+            // Reaps the tasks that have finished and stops dispatch at the first failure; the
+            // budget is what bounds the tasks live.
+            lore_limit_drain_tasks!(
+                tasks,
+                MAX_CONCURRENT_TREE_TASKS,
+                StageError::internal("Failed to join task")
+            )?;
         }
         Ok::<(), StageError>(())
     }
@@ -3721,149 +4145,98 @@ pub(crate) async fn stage_from_parent_state(
     final_result
 }
 
-#[cfg(test)]
-mod directory_children_tests {
-    use super::*;
+/// Counts the tasks one-side resolutions have live, for a test to read the peak, and holds
+/// every change they stage until released, so a test can see the tasks pile up. Per process,
+/// so a test using this runs alone in its binary.
+#[cfg(feature = "test-util")]
+pub mod resolve_tasks {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
 
-    /// The children in sibling order, as `stage_directory` indexes them.
-    fn children(entries: &[(NodeID, u64)]) -> DirectoryChildren {
-        DirectoryChildren::new(entries.to_vec())
+    use tokio::sync::Notify;
+
+    static LIVE: AtomicUsize = AtomicUsize::new(0);
+    static PEAK: AtomicUsize = AtomicUsize::new(0);
+    static SPAWNED: AtomicUsize = AtomicUsize::new(0);
+    static HELD: AtomicBool = AtomicBool::new(false);
+    static RELEASED: Notify = Notify::const_new();
+    static BUDGET: AtomicUsize = AtomicUsize::new(crate::MAX_CONCURRENT_TREE_TASKS);
+
+    /// Zeroes the counts and restores the budget.
+    pub fn reset() {
+        LIVE.store(0, Ordering::Relaxed);
+        PEAK.store(0, Ordering::Relaxed);
+        SPAWNED.store(0, Ordering::Relaxed);
+        BUDGET.store(crate::MAX_CONCURRENT_TREE_TASKS, Ordering::Relaxed);
     }
 
-    #[test]
-    fn a_claim_finds_the_child_with_that_name() {
-        let mut children = children(&[(10, 0xAA), (11, 0xBB), (12, 0xCC)]);
-        assert_eq!(children.claim(0xBB), Some(11));
-        assert_eq!(children.claim(0xAA), Some(10));
-        assert_eq!(children.claim(0xCC), Some(12));
-        assert_eq!(
-            children.unclaimed().collect::<Vec<_>>(),
-            Vec::<NodeID>::new()
-        );
+    /// Sizes the budget the next resolution runs under, so a test can exceed it with a small
+    /// tree. [`crate::MAX_CONCURRENT_TREE_TASKS`] until set.
+    pub fn set_budget(permits: usize) {
+        BUDGET.store(permits, Ordering::Relaxed);
     }
 
-    #[test]
-    fn a_name_the_directory_does_not_hold_claims_nothing() {
-        let mut children = children(&[(10, 0xAA)]);
-        assert_eq!(children.claim(0xBB), None);
-        assert_eq!(children.unclaimed().collect::<Vec<_>>(), vec![10]);
+    /// The permits a resolution's budget holds.
+    pub(crate) fn budget() -> usize {
+        BUDGET.load(Ordering::Relaxed)
     }
 
-    /// Two names differing only in case hash the same, and a claim takes the
-    /// first child not already claimed. Sibling order is what makes that choice
-    /// reproducible, so it has to survive the sort.
-    #[test]
-    fn equal_hashes_are_claimed_in_sibling_order() {
-        let mut children = children(&[(10, 0xAA), (11, 0xAA), (12, 0xAA)]);
-        assert_eq!(children.claim(0xAA), Some(10));
-        assert_eq!(children.claim(0xAA), Some(11));
-        assert_eq!(children.claim(0xAA), Some(12));
-        assert_eq!(children.claim(0xAA), None);
+    /// Stops every change about to be staged until [`release`] is called.
+    pub fn hold() {
+        HELD.store(true, Ordering::Release);
     }
 
-    /// A run of children sharing a hash, wide enough that a sort keyed on the
-    /// hash alone reorders it.
-    fn wide_runs_of_equal_hashes() -> Vec<(NodeID, u64)> {
-        (0..64u64)
-            .map(|index| (index as NodeID + 100, index % 3))
-            .collect()
+    /// Lets the changes [`hold`] stopped go on.
+    pub fn release() {
+        HELD.store(false, Ordering::Release);
+        RELEASED.notify_waiters();
     }
 
-    /// The index keys on the sibling position as well as the hash, so a run of
-    /// equal hashes carries no ties for the sort to order as it likes.
-    #[test]
-    fn the_index_leaves_no_ties_among_equal_hashes() {
-        let children = children(&wide_runs_of_equal_hashes());
-        assert!(
-            children
-                .by_name_hash
-                .windows(2)
-                .all(|pair| pair[0] < pair[1]),
-            "the index must be strictly ordered: {:?}",
-            children.by_name_hash
-        );
-    }
-
-    /// A claim takes the child out of what the listing offers, not out of what
-    /// it holds: a search of the chain still reaches it, so the index still
-    /// answers for it.
-    #[test]
-    fn a_claimed_child_is_still_held() {
-        let mut children = children(&[(10, 0xAA), (11, 0xAA), (12, 0xBB)]);
-        assert_eq!(children.claim(0xAA), Some(10));
-        assert_eq!(children.holds(0xAA), Some(10));
-        assert_eq!(children.claim(0xAA), Some(11));
-        assert_eq!(children.claim(0xAA), None, "the listing offers no more");
-        assert_eq!(children.holds(0xAA), Some(10), "the listing still holds it");
-        assert_eq!(children.holds(0xCC), None, "a name it never held");
-    }
-
-    /// The head is the child the chain was headed by, which everything linked in
-    /// since sits ahead of.
-    #[test]
-    fn the_listing_head_is_the_first_child_in_sibling_order() {
-        let mut indexed = children(&[(10, 0xAA), (11, 0xBB)]);
-        assert_eq!(indexed.listing_head, Some(10));
-        assert_eq!(indexed.claim(0xAA), Some(10));
-        assert_eq!(
-            indexed.listing_head,
-            Some(10),
-            "claiming the head does not move it"
-        );
-        assert_eq!(children(&[]).listing_head, None, "an empty listing");
-    }
-
-    #[test]
-    fn what_nothing_claimed_comes_back_in_sibling_order() {
-        let mut children = children(&[(10, 0xAA), (11, 0xBB), (12, 0xAA), (13, 0xCC)]);
-        assert_eq!(children.claim(0xAA), Some(10));
-        assert_eq!(children.claim(0xCC), Some(13));
-        assert_eq!(children.unclaimed().collect::<Vec<_>>(), vec![11, 12]);
-    }
-
-    #[test]
-    fn an_empty_directory_claims_nothing_and_deletes_nothing() {
-        let mut children = children(&[]);
-        assert_eq!(children.claim(0xAA), None);
-        assert_eq!(children.unclaimed().count(), 0);
-    }
-
-    /// The first child carrying `name_hash` that nothing has taken, taken, found
-    /// by scanning `scanned` in sibling order.
-    fn scan_claim(scanned: &mut [Option<(NodeID, u64)>], name_hash: u64) -> Option<NodeID> {
-        let position = scanned
-            .iter()
-            .position(|entry| entry.is_some_and(|(_, hash)| hash == name_hash))?;
-        scanned[position].take().map(|(node, _)| node)
-    }
-
-    /// The index has to agree with a scan of the same children on every input,
-    /// not just the ones written out above: same children, same sequence of
-    /// claims, same answers and same leftovers.
-    ///
-    /// The claims cover every hash the children hold and two they do not, each
-    /// asked for more times than the children can answer, so duplicates, misses
-    /// and exhausted runs all occur.
-    #[test]
-    fn the_index_answers_exactly_as_a_scan_of_the_same_children_would() {
-        let entries = wide_runs_of_equal_hashes();
-        let mut indexed = children(&entries);
-        let mut scanned: Vec<Option<(NodeID, u64)>> = entries.iter().copied().map(Some).collect();
-
-        for step in 0..160u64 {
-            let name_hash = (step * 7) % 5;
-            assert_eq!(
-                indexed.claim(name_hash),
-                scan_claim(&mut scanned, name_hash),
-                "claim({name_hash}) at step {step}"
-            );
+    /// Waits while a hold is on. The wakeup is registered before the flag is read, so a
+    /// release between the two is not missed.
+    pub(crate) async fn wait_if_held() {
+        loop {
+            let released = RELEASED.notified();
+            tokio::pin!(released);
+            released.as_mut().enable();
+            if !HELD.load(Ordering::Acquire) {
+                return;
+            }
+            released.await;
         }
-        assert_eq!(
-            indexed.unclaimed().collect::<Vec<_>>(),
-            scanned
-                .iter()
-                .filter_map(|entry| entry.map(|(node, _)| node))
-                .collect::<Vec<_>>()
-        );
+    }
+
+    /// The tasks live now.
+    pub fn live() -> usize {
+        LIVE.load(Ordering::Relaxed)
+    }
+
+    /// The most tasks live at once since the last reset.
+    pub fn peak() -> usize {
+        PEAK.load(Ordering::Relaxed)
+    }
+
+    /// The tasks spawned since the last reset.
+    pub fn spawned() -> usize {
+        SPAWNED.load(Ordering::Relaxed)
+    }
+
+    /// A task counted as live from its spawn until this is dropped.
+    pub(crate) struct Live;
+
+    impl Live {
+        pub(crate) fn enter() -> Self {
+            SPAWNED.fetch_add(1, Ordering::Relaxed);
+            let live = LIVE.fetch_add(1, Ordering::AcqRel) + 1;
+            PEAK.fetch_max(live, Ordering::AcqRel);
+            Live
+        }
+    }
+
+    impl Drop for Live {
+        fn drop(&mut self) {
+            LIVE.fetch_sub(1, Ordering::AcqRel);
+        }
     }
 }

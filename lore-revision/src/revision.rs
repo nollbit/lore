@@ -16,7 +16,6 @@ use std::sync::Arc;
 use lore_base::lore_spawn;
 use lore_error_set::prelude::*;
 use lore_transport::RevisionListIdentifier;
-use serde::Deserialize;
 use serde::Serialize;
 use tokio::join;
 use tokio::sync::mpsc;
@@ -704,10 +703,12 @@ pub async fn diff3_with_source_cap(
     Ok(summary)
 }
 
+#[lore_macro::test_pub]
 fn is_below(mount: &RelativePath, path: &RelativePath) -> bool {
     mount.covers(path) && mount != path
 }
 
+#[lore_macro::test_pub]
 fn push_unique_path(paths: &mut Vec<RelativePath>, path: &RelativePath) {
     if !paths.contains(path) {
         paths.push(path.clone());
@@ -1257,7 +1258,7 @@ pub async fn tree(
 /// cbindgen:prefix-with-name
 /// cbindgen:rename-all=ScreamingSnakeCase
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub enum LoreRevisionResolveTarget {
     /// A revision by its number on the branch.
@@ -1274,7 +1275,7 @@ pub enum LoreRevisionResolveTarget {
 /// a long stretch of history. A specifier that names no branch resolves to
 /// itself and reports nothing.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreRevisionResolveEventData {
     /// Repository identifier in which repository
@@ -1878,31 +1879,4 @@ async fn resolve_revision(
     }
 
     Ok((revision, named_branch))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn path(text: &str) -> RelativePath {
-        RelativePath::new_from_initial_path(text).expect("valid path")
-    }
-
-    #[test]
-    fn is_below_accepts_only_paths_inside_the_mount() {
-        assert!(is_below(&path("shared"), &path("shared/a.txt")));
-        assert!(is_below(&path("shared"), &path("shared/deep/a.txt")));
-        assert!(!is_below(&path("shared"), &path("shared")));
-        assert!(!is_below(&path("shared"), &path("shared-other/a.txt")));
-        assert!(!is_below(&path("shared"), &path("root.txt")));
-    }
-
-    #[test]
-    fn push_unique_path_holds_one_entry_per_path() {
-        let mut paths = Vec::new();
-        push_unique_path(&mut paths, &path("shared"));
-        push_unique_path(&mut paths, &path("shared"));
-        push_unique_path(&mut paths, &path("other"));
-        assert_eq!(paths.len(), 2);
-    }
 }

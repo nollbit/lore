@@ -309,6 +309,7 @@ impl AuthClientAuthorizer {
     }
 }
 
+#[lore_macro::test_pub]
 fn check_user_permission_request(
     resource_id: String,
     authorization: Option<String>,
@@ -322,6 +323,7 @@ fn check_user_permission_request(
     )
 }
 
+#[lore_macro::test_pub]
 pub(super) fn bearer_header(token: Option<&VerifiedToken<'_>>) -> Option<String> {
     token.map(|token| format!("Bearer {}", token.raw))
 }
@@ -349,6 +351,7 @@ fn grants_from_resources_claim(
 /// Grants from a `CheckUserPermission` response: unreachable when no
 /// allowed entry names the resource, otherwise the permissions merged across
 /// every entry for the resource.
+#[lore_macro::test_pub]
 fn grants_from_response(response: &CheckUserPermissionResponse, resource_id: &str) -> Grants {
     let matching: Vec<_> = response
         .allowed_resource_permission
@@ -393,6 +396,7 @@ fn evaluate_resources_claim(
 ///
 /// `action: None` checks whether an allowed entry contains the resource at all.
 /// `action: Some` also checks whether the entry grants the named action.
+#[lore_macro::test_pub]
 fn evaluate_check_user_permission(
     response: &CheckUserPermissionResponse,
     resource_id: &str,

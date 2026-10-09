@@ -6,6 +6,7 @@ permissions:
   contents: read
 env:
   CARGO_BUILD_JOBS: 2
+  CARGO_PROFILE_TEST_DEBUG: "0"
 jobs:
   server:
     strategy:
@@ -24,11 +25,15 @@ jobs:
         run: rustup toolchain install 1.98.1 --profile minimal && rustup override set 1.98.1
       - uses: Swatinem/rust-cache@v2
       - name: Test branch guards
-        run: cargo test --locked -p lore-server --lib
+        run: |
+          cargo test --locked -p lore-server
+          cargo test --locked -p lore-server --lib
       - name: Test authentication renewal
         run: cargo test --locked -p lore-transport --test refresh
       - name: Build server
-        run: cargo build --locked --release -p lore-server --bin loreserver -p lore-client --bin lore
+        run: |
+          cargo build --locked --release -p lore-server --bin loreserver -p lore-client --bin lore -p lore-base --bin lore-stamp
+          target/release/lore-stamp --build "$GITHUB_SHA" target/release/loreserver target/release/lore
       - uses: actions/upload-artifact@v4
         with:
           name: lore-linux-${{ matrix.arch }}
@@ -50,7 +55,9 @@ jobs:
       - name: Test authentication renewal
         run: cargo test --locked -p lore-transport --test refresh
       - name: Build client
-        run: cargo build --locked --release -p lore-client --bin lore
+        run: |
+          cargo build --locked --release -p lore-client --bin lore -p lore-base --bin lore-stamp
+          target/release/lore-stamp --build "$GITHUB_SHA" target/release/lore
       - uses: actions/upload-artifact@v4
         with:
           name: lore-macos-arm64

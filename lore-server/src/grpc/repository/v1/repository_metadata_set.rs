@@ -142,6 +142,7 @@ pub async fn handler(
 }
 
 /// Reject a proposed metadata blob that mutates a read-only field.
+#[lore_macro::test_pub]
 fn validate_read_only_fields(current: &Metadata, proposed: &Metadata) -> Result<(), Status> {
     for key in READ_ONLY_KEYS {
         let current_value = current.get_typed(key);

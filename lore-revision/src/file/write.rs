@@ -6,7 +6,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use lore_error_set::prelude::*;
-use serde::Deserialize;
 use serde::Serialize;
 
 use crate::errors::*;
@@ -33,7 +32,7 @@ use crate::util::path::repository_relative_path;
 
 /// Data for the event emitted when file content is written to a destination.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreFileWriteEventData {
     /// Path that was written.
@@ -120,6 +119,7 @@ pub struct WriteAddressOptions {}
 /// destination of `write_{file,address}` is the only thing they mutate, so
 /// the discipline reduces to: token present, OR destination outside the
 /// repository working directory.
+#[lore_macro::test_pub]
 fn check_destination_access(
     repository_path: &Path,
     output: &str,
@@ -375,24 +375,4 @@ pub async fn write_address(
     .send();
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    #[cfg(not(target_os = "windows"))]
-    use super::*;
-
-    #[test]
-    #[cfg(not(target_os = "windows"))]
-    fn destination_inside_repo_without_token_is_write_required() {
-        let result = check_destination_access(Path::new("/a/b"), "/a/b/payload.bin", None);
-        assert!(matches!(result, Err(WriteError::WriteRequired(_))));
-    }
-
-    #[test]
-    #[cfg(not(target_os = "windows"))]
-    fn destination_outside_repo_without_token_is_ok() {
-        let result = check_destination_access(Path::new("/a/b"), "/c/payload.bin", None);
-        assert!(result.is_ok());
-    }
 }

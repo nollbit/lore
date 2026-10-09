@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Epic Games, Inc.
 // SPDX-License-Identifier: MIT
+use std::time::Duration;
+
 use bytes::Bytes;
 use lore_base::types::*;
 use serde::Deserialize;
@@ -255,10 +257,32 @@ pub struct MetadataSetResult {
 /// Result of an interactive login session initiation.
 #[derive(Clone, Debug)]
 pub struct AuthSession {
-    /// Opaque session identifier for polling.
+    /// Opaque session identifier for polling. The device grant's
+    /// `device_code`.
     pub session_code: String,
-    /// URL the user should visit to authenticate.
+    /// URL the user should visit to authenticate. The device grant's
+    /// `verification_uri_complete`.
     pub login_url: String,
+    /// Code the user types at `login_url` from another machine. Empty when
+    /// the backend embeds it in `login_url` and offers no other entry.
+    pub user_code: String,
+    /// Minimum time between two polls of the session.
+    pub interval: Duration,
+    /// How long the session stays open for approval, counted from when it
+    /// was started.
+    pub expires_in: Duration,
+}
+
+#[derive(Clone, Debug)]
+pub enum AuthSessionPoll {
+    /// The user has not approved the login yet. Poll again after the
+    /// session's `interval`.
+    Pending,
+    /// The user has not approved the login yet, and the backend wants a
+    /// longer gap before the next poll than the session's `interval`.
+    SlowDown,
+    /// The user approved the login and the backend issued a token.
+    Complete(AuthenticationToken),
 }
 
 /// Authentication token with user identity metadata.
@@ -283,6 +307,9 @@ pub struct AuthenticationToken {
     /// without re-authenticating. `None` if the auth backend does not support
     /// refresh. Consumed on use -- the next refresh returns a new one.
     pub refresh_token: Option<String>,
+    /// The scope the backend granted, space-delimited as RFC 6749 §3.3 has
+    /// it. `None` when the backend reports no scope.
+    pub scope: Option<String>,
 }
 
 /// Authorization token scoped to a specific resource.
@@ -307,123 +334,4 @@ pub struct ResolvedUser {
     pub user_id: String,
     /// Human-readable display name.
     pub user_name: String,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const FALLBACK: &str = "grpc://fallback.example:1234";
-
-    fn env_with(endpoint: Endpoint) -> EnvironmentConfig {
-        EnvironmentConfig {
-            endpoint: Some(endpoint),
-            config: None,
-            oidc: None,
-        }
-    }
-
-    #[test]
-    fn service_url_returns_override_when_set() {
-        let env = env_with(Endpoint {
-            storage_url: Some("quic://storage.example:7000".into()),
-            ..Default::default()
-        });
-        assert_eq!(env.storage_url(FALLBACK), "quic://storage.example:7000");
-    }
-
-    #[test]
-    fn service_url_falls_back_when_field_is_none() {
-        let env = env_with(Endpoint::default());
-        assert_eq!(env.storage_url(FALLBACK), FALLBACK);
-        assert_eq!(env.revision_url(FALLBACK), FALLBACK);
-        assert_eq!(env.lock_url(FALLBACK), FALLBACK);
-        assert_eq!(env.repository_url(FALLBACK), FALLBACK);
-        assert_eq!(env.notification_url(FALLBACK), FALLBACK);
-    }
-
-    #[test]
-    fn service_url_falls_back_when_field_is_empty_string() {
-        // An empty Option<String> from proto decoding must behave identically
-        // to None — the field is "unset."
-        let env = env_with(Endpoint {
-            storage_url: Some(String::new()),
-            revision_url: Some(String::new()),
-            ..Default::default()
-        });
-        assert_eq!(env.storage_url(FALLBACK), FALLBACK);
-        assert_eq!(env.revision_url(FALLBACK), FALLBACK);
-    }
-
-    #[test]
-    fn service_url_falls_back_when_endpoint_section_missing() {
-        let env = EnvironmentConfig {
-            endpoint: None,
-            config: None,
-            oidc: None,
-        };
-        assert_eq!(env.storage_url(FALLBACK), FALLBACK);
-        assert_eq!(env.repository_url(FALLBACK), FALLBACK);
-    }
-
-    #[test]
-    fn per_service_overrides_are_independent() {
-        // Only some services have overrides; the others must fall back.
-        let env = env_with(Endpoint {
-            storage_url: Some("quic://storage.example:7000".into()),
-            lock_url: Some("grpc://lock.example:8000".into()),
-            ..Default::default()
-        });
-        assert_eq!(env.storage_url(FALLBACK), "quic://storage.example:7000");
-        assert_eq!(env.lock_url(FALLBACK), "grpc://lock.example:8000");
-        assert_eq!(env.revision_url(FALLBACK), FALLBACK);
-        assert_eq!(env.repository_url(FALLBACK), FALLBACK);
-        assert_eq!(env.notification_url(FALLBACK), FALLBACK);
-    }
-
-    /// Uses `auth_url` as fallback user directory, unless
-    /// `user_url` is defined
-    #[test]
-    fn user_url_follows_the_auth_url_until_advertised() {
-        const AUTH_URL: &str = "ucs-auth://auth.example.com";
-
-        assert_eq!(env_with(Endpoint::default()).user_url(AUTH_URL), AUTH_URL);
-        assert_eq!(
-            env_with(Endpoint {
-                user_url: Some(String::new()),
-                ..Default::default()
-            })
-            .user_url(AUTH_URL),
-            AUTH_URL
-        );
-        assert_eq!(
-            env_with(Endpoint {
-                user_url: Some("ucs-auth://directory.example.com".into()),
-                ..Default::default()
-            })
-            .user_url(AUTH_URL),
-            "ucs-auth://directory.example.com"
-        );
-    }
-
-    #[test]
-    fn identity_claim_defaults_to_sub_until_advertised() {
-        assert_eq!(Oidc::default().identity_claim(), "sub");
-        assert_eq!(
-            Oidc {
-                identity_claim: Some(String::new()),
-                ..Default::default()
-            }
-            .identity_claim(),
-            "sub"
-        );
-        assert_eq!(
-            Oidc {
-                identity_claim: Some("email".into()),
-                ..Default::default()
-            }
-            .identity_claim(),
-            "email"
-        );
-    }
 }
