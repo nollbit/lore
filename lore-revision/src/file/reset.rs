@@ -8,7 +8,6 @@ use std::sync::atomic::Ordering;
 
 use lore_base::lore_spawn;
 use lore_error_set::prelude::*;
-use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
@@ -46,10 +45,9 @@ use crate::node::ROOT_NODE;
 use crate::node::SiblingCycleGuard;
 use crate::path::resolve_user_paths;
 use crate::progress::DEFAULT_WORK_CHANNEL_CAPACITY;
-use crate::repository::DOT_LORE;
-use crate::repository::DOT_URC;
 use crate::repository::RepositoryContext;
 use crate::repository::RepositoryWriteToken;
+use crate::repository::is_reserved_node_name;
 use crate::revision;
 use crate::revision::sync::SyncRealizeStats;
 use crate::runtime::execution_context;
@@ -60,7 +58,7 @@ use crate::util::path::RelativePath;
 
 /// Data for the event emitted when a reset operation begins.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreFileResetBeginEventData {
     /// Number of paths requested for reset.
@@ -69,7 +67,7 @@ pub struct LoreFileResetBeginEventData {
 
 /// Running counts of items processed during a reset operation.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreFileResetCountData {
     /// Number of directories that were reset.
@@ -84,7 +82,7 @@ pub struct LoreFileResetCountData {
 
 /// Data for the progress event emitted periodically during a reset operation.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreFileResetProgressEventData {
     /// Current counts of items processed.
@@ -93,7 +91,7 @@ pub struct LoreFileResetProgressEventData {
 
 /// Data for the event emitted when a reset operation completes.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreFileResetEndEventData {
     /// Final counts of items processed.
@@ -102,7 +100,7 @@ pub struct LoreFileResetEndEventData {
 
 /// Data for the event emitted for each file affected by a reset operation.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreFileResetFileEventData {
     /// Path of the file.
@@ -633,16 +631,11 @@ pub async fn reset(
     // If the staged state was modified (dirty flags cleared), persist it.
     // If no staged or dirty nodes remain, delete the anchor.
     if outer_state_staged.is_dirty() {
-        let has_staged = outer_state_staged
-            .node_has_staged_children(repository.clone(), ROOT_NODE)
+        if !outer_state_staged
+            .node_has_staged_or_dirty_children(repository.clone(), ROOT_NODE)
             .await
-            .forward::<ResetError>("Failed deserializing state node block")?;
-        let has_dirty = outer_state_staged
-            .node_has_dirty_children(repository.clone(), ROOT_NODE)
-            .await
-            .forward::<ResetError>("Failed deserializing state node block")?;
-
-        if !has_staged && !has_dirty {
+            .forward::<ResetError>("Failed deserializing state node block")?
+        {
             crate::instance::delete_staged_anchor(&repository)
                 .await
                 .forward::<ResetError>("Failed deserializing state node block")?;
@@ -1679,16 +1672,6 @@ async fn reset_walk_directory(
     let mut cycle = SiblingCycleGuard::new(node_id);
 
     while let Some(child_node_id) = child_node_iter {
-        let child_node_name = state_target
-            .node_name_clone(repository.clone(), child_node_id)
-            .await
-            .forward::<ResetError>("Failed to get node name")?;
-
-        let child_node_path = directory_path.join(&child_node_name);
-        if options.purge {
-            node_children_names.push(child_node_name.clone());
-        }
-
         let Ok(child_node) = state_target.node(repository.clone(), child_node_id).await else {
             failure = Some(ResetError::internal(
                 "Failed deserializing state node block",
@@ -1702,6 +1685,20 @@ async fn reset_walk_directory(
         {
             failure = Some(err);
             break;
+        }
+
+        let Some(child_node_name) = state_target
+            .node_name_clone_or_skip(repository.clone(), child_node_id)
+            .await
+            .forward::<ResetError>("Failed to get node name")?
+        else {
+            child_node_iter = child_node.sibling();
+            continue;
+        };
+
+        let child_node_path = directory_path.join(&child_node_name);
+        if options.purge {
+            node_children_names.push(child_node_name.clone());
         }
 
         if child_node.is_directory() || child_node.is_link() {
@@ -1839,7 +1836,7 @@ async fn purge_untracked_children(
     while let Some(filesystem_child) = filesystem_children.next().await {
         let filesystem_child =
             filesystem_child.forward_any::<ResetError>("Unusable directory entry")?;
-        if filesystem_child.name == DOT_URC || filesystem_child.name == DOT_LORE {
+        if is_reserved_node_name(&filesystem_child.name) {
             continue;
         }
 
@@ -2057,7 +2054,7 @@ async fn reset_file_realize(
     crate::fs::realize::realize_file(
         repository.clone(),
         operation,
-        &relative_path,
+        relative_path,
         node,
         Arc::new(SyncRealizeStats::default()),
     )

@@ -33,6 +33,10 @@ jobs:
 
           # --no-merges drops PR merge commits; they aren't authored by the contributor.
           commits=$(git rev-list --no-merges "$BASE_SHA".."$HEAD_SHA")
+          if [ "$GITHUB_REPOSITORY" != "EpicGames/lore" ]; then
+            git fetch --no-tags https://github.com/EpicGames/lore.git main:refs/remotes/epic/main
+            commits=$(git rev-list --no-merges "$BASE_SHA".."$HEAD_SHA" --not refs/remotes/epic/main)
+          fi
 
           if [ -z "$commits" ]; then
             echo "No non-merge commits to check." | tee -a "$GITHUB_STEP_SUMMARY"
@@ -89,7 +93,7 @@ jobs:
             echo ""
             echo "Verifies every commit in this PR carries a \`Signed-off-by\` line"
             echo "matching its author, certifying the [Developer Certificate of Origin]($DCO_DOC)."
-            echo "Merge commits and bot authors are exempt."
+            echo "Merge commits, bot authors and commits already present in EpicGames/lore main are exempt."
             echo ""
             echo "Passed: $pass · Skipped (bots): $skip · Failed: $fail"
           } >> "$GITHUB_STEP_SUMMARY"

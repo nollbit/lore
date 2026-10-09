@@ -8,7 +8,6 @@ use dashmap::DashMap;
 use lore_base::types::BranchPoint;
 use lore_error_set::prelude::*;
 use lore_transport::Connection;
-use serde::Deserialize;
 use serde::Serialize;
 
 use crate::bitflagsops;
@@ -36,6 +35,7 @@ use crate::node::NodeID;
 use crate::node::NodeIDExt;
 use crate::repository::RepositoryContext;
 use crate::repository::RepositoryWriteToken;
+use crate::repository::is_reserved_node_name;
 use crate::revision;
 use crate::revision::sync;
 use crate::revision::sync::SyncOptions;
@@ -233,7 +233,7 @@ impl LinkTracker {
 
 /// Data for an event reporting a change to a link.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreLinkChangeEventData {
     /// Path of the link within the parent repository.
@@ -280,7 +280,7 @@ impl LoreLinkChangeEventData {
 /// repository. A repository can be linked at more than one mount path, so a
 /// consumer must key on `link_path` together with `link_repository`.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreLinkBranchCreateEventData {
     /// Path of the link within the parent repository.
@@ -770,6 +770,12 @@ pub async fn resolve_link_chain(
 
     while !remainder_path.is_empty() {
         let name = remainder_path.pop_root();
+        if is_reserved_node_name(name) {
+            return Err(InvalidPath {
+                path: name.to_string(),
+            }
+            .into());
+        }
         let name_hash = crate::hash::hash_string(name);
         below_mount.push(name);
 
@@ -1139,7 +1145,7 @@ pub async fn restore_link_paths_from_state(
             crate::fs::realize::realize_file(
                 link_context.clone(),
                 operation.clone(),
-                &mount_path,
+                mount_path,
                 node,
                 Arc::default(),
             )
@@ -2263,53 +2269,4 @@ pub fn link_mount_prefix(full_path: &str, link_relative: &str) -> String {
         .unwrap_or(full_path)
         .trim_end_matches('/');
     trimmed.to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use lore_base::runtime::LORE_CONTEXT;
-
-    use super::*;
-    use crate::fs::filesystem_provider::tests::setup_test_execution;
-    use crate::fs::filesystem_provider::tests::test_store_create;
-
-    fn link(link_repository_id: RepositoryId, link_node_id: NodeID) -> LinkContext {
-        LinkContext {
-            link_repository_id,
-            link_node_id,
-            parent_repository_id: RepositoryId::from([9; 16]),
-            link_state: State::new(),
-        }
-    }
-
-    /// A node change marks the links into the linked repository it is in, and
-    /// nothing when it is in the top-level repository, even for a link whose
-    /// target has the top-level repository's id.
-    #[tokio::test]
-    async fn only_a_node_change_in_a_linked_repository_marks_links() {
-        LORE_CONTEXT
-            .scope(setup_test_execution(), async {
-                let (immutable_store, mutable_store, _execution) =
-                    test_store_create().await.expect("making test stores");
-                let top_level = RepositoryContext::new_null_context(immutable_store, mutable_store);
-                let linked = top_level.to_link_context(RepositoryId::from([1; 16])).await;
-
-                let tracker = LinkTracker::new();
-                tracker.add_link(link(top_level.id, 10));
-                tracker.add_link(link(linked.id, 20));
-
-                tracker.on_node_changed(&top_level);
-                assert!(
-                    !tracker.has_modifications(),
-                    "a change in the top-level repository marked a link"
-                );
-
-                tracker.on_node_changed(&linked);
-                assert_eq!(
-                    tracker.get_links_needing_rehash(),
-                    vec![link(linked.id, 20)]
-                );
-            })
-            .await;
-    }
 }

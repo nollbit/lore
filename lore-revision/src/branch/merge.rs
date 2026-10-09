@@ -86,11 +86,12 @@ use crate::state::State;
 use crate::state::StateNodeChildrenWithNameIterator;
 use crate::util::path::RelativePath;
 use crate::util::path::RelativePathBuf;
+use crate::util::request_tracker::StoreRequestTracker;
 use crate::util::serde::u8_as_bool;
 
 /// Data for the event sent when a branch merge starts.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreBranchMergeStartBeginEventData {
     /// The source branch being merged.
@@ -103,7 +104,7 @@ pub struct LoreBranchMergeStartBeginEventData {
 
 /// Data for the event sent when a branch merge finishes.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreBranchMergeStartEndEventData {
     /// Progress totals collected while applying the merge.
@@ -116,7 +117,7 @@ pub struct LoreBranchMergeStartEndEventData {
 
 /// Data for the event sent when a branch merge abort starts.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreBranchMergeAbortBeginEventData {
     /// The staged revision being discarded.
@@ -127,7 +128,7 @@ pub struct LoreBranchMergeAbortBeginEventData {
 
 /// Data for the event sent when a branch merge abort finishes.
 #[repr(C)]
-#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreBranchMergeAbortEndEventData {
     /// Placeholder field. The event carries no payload.
@@ -136,7 +137,7 @@ pub struct LoreBranchMergeAbortEndEventData {
 
 /// Data for the event sent before files are merged into the working tree.
 #[repr(C)]
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreBranchMergeIntoFileBeginEventData {
     /// The number of files to merge.
@@ -145,7 +146,7 @@ pub struct LoreBranchMergeIntoFileBeginEventData {
 
 /// Data for the event sent for each file merged into the working tree.
 #[repr(C)]
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreBranchMergeIntoFileEventData {
     /// The path of the file.
@@ -167,7 +168,7 @@ pub struct LoreBranchMergeIntoFileEventData {
 
 /// Data for the event sent after files are merged into the working tree.
 #[repr(C)]
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreBranchMergeIntoFileEndEventData {
     /// The number of files merged.
@@ -176,7 +177,7 @@ pub struct LoreBranchMergeIntoFileEndEventData {
 
 /// Data for the event sent before the merge synchronizes revisions.
 #[repr(C)]
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreBranchMergeIntoSyncBeginEventData {
     /// The number of revisions to synchronize.
@@ -185,7 +186,7 @@ pub struct LoreBranchMergeIntoSyncBeginEventData {
 
 /// Data for the event sent after the merge synchronizes revisions.
 #[repr(C)]
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreBranchMergeIntoSyncEndEventData {
     /// The number of revisions synchronized.
@@ -194,7 +195,7 @@ pub struct LoreBranchMergeIntoSyncEndEventData {
 
 /// Data for the event sent before the merge transfers fragments.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreBranchMergeIntoFragmentBeginEventData {
     /// The number of fragments to transfer.
@@ -203,7 +204,7 @@ pub struct LoreBranchMergeIntoFragmentBeginEventData {
 
 /// Data for the event sent as the merge transfers fragments.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreBranchMergeIntoFragmentProgressEventData {
     /// The number of fragments transferred so far.
@@ -214,7 +215,7 @@ pub struct LoreBranchMergeIntoFragmentProgressEventData {
 
 /// Data for the event sent after the merge transfers fragments.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreBranchMergeIntoFragmentEndEventData {
     /// The number of fragments transferred.
@@ -223,7 +224,7 @@ pub struct LoreBranchMergeIntoFragmentEndEventData {
 
 /// Data for the event sent for each revision merged into the working tree.
 #[repr(C)]
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreBranchMergeIntoRevisionEventData {
     /// The revision merged.
@@ -234,7 +235,7 @@ pub struct LoreBranchMergeIntoRevisionEventData {
 
 /// Data for the event sent for each file the merge left in conflict.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreBranchMergeConflictFileEventData {
     /// The path of the conflicted file.
@@ -259,7 +260,7 @@ pub enum LinkMergeSkipReason {
 
 /// Data for the event sent when a link is skipped during a merge.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreBranchMergeLinkSkippedEventData {
     /// The mount path of the skipped link.
@@ -272,7 +273,7 @@ pub struct LoreBranchMergeLinkSkippedEventData {
 
 /// Data for the event sent when a file in a merge is marked unresolved.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreBranchMergeUnresolveFileEventData {
     /// The path of the file marked unresolved.
@@ -281,7 +282,7 @@ pub struct LoreBranchMergeUnresolveFileEventData {
 
 /// Data for the event sent when a revision in a merge is marked unresolved.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreBranchMergeUnresolveRevisionEventData {
     /// The repository of the revision marked unresolved.
@@ -292,7 +293,7 @@ pub struct LoreBranchMergeUnresolveRevisionEventData {
 
 /// Data for the event sent when a file in a merge is marked resolved.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreBranchMergeResolveFileEventData {
     /// The path of the file marked resolved.
@@ -301,7 +302,7 @@ pub struct LoreBranchMergeResolveFileEventData {
 
 /// Data for the event sent when a revision in a merge is marked resolved.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreBranchMergeResolveRevisionEventData {
     /// The repository of the revision marked resolved.
@@ -3963,78 +3964,85 @@ pub struct MergeIntoOptions {
     pub inherit_metadata: MetadataInherit,
 }
 
-async fn merge_metadata_task(
+/// Copies the file metadata `path` has in `state_source` onto `path` in `state_staged`, where
+/// both states hold it.
+///
+/// Not an `async fn`, which would hold a second copy of its arguments.
+#[allow(clippy::manual_async_fn)]
+fn merge_metadata_task(
     repository: Arc<RepositoryContext>,
-    change: NodeChange,
+    path: RelativePath,
     state_source: Arc<State>,
     state_staged: Arc<State>,
-) -> Result<(), MergeError> {
-    let metadata_hash;
+) -> impl Future<Output = Result<(), MergeError>> {
+    async move {
+        let metadata_hash;
 
-    if let Ok(node_link) = state_source
-        .find_node_link(repository.clone(), change.path().as_str())
-        .await
-        && node_link.is_valid()
-    {
-        let metadata_node = node::node_to_file_metadata(node_link.node);
-        let metadata_block_index = NodeFileMetadataBlock::index(metadata_node);
-        let metadata_node_index = NodeFileMetadata::index(metadata_node);
-
-        let metadata_block = state_source
-            .block_file_metadata(repository.clone(), metadata_block_index)
+        if let Ok(node_link) = state_source
+            .find_node_link(repository.clone(), path.as_str())
             .await
-            .forward::<MergeError>("deserializing metadata block")?;
+            && node_link.is_valid()
+        {
+            let metadata_node = node::node_to_file_metadata(node_link.node);
+            let metadata_block_index = NodeFileMetadataBlock::index(metadata_node);
+            let metadata_node_index = NodeFileMetadata::index(metadata_node);
 
-        let block_reader = metadata_block.read();
-        let node = block_reader.node(metadata_node_index);
+            let metadata_block = state_source
+                .block_file_metadata(repository.clone(), metadata_block_index)
+                .await
+                .forward::<MergeError>("deserializing metadata block")?;
 
-        metadata_hash = node.metadata;
-    } else {
-        lore_debug!(
-            "Merge metadata skipped due to missing 'source' node for {}",
-            change.path()
-        );
-        return Ok(());
-    }
+            let block_reader = metadata_block.read();
+            let node = block_reader.node(metadata_node_index);
 
-    if let Ok(node_link) = state_staged
-        .find_node_link(repository.clone(), change.path().as_str())
-        .await
-        && node_link.is_valid()
-    {
-        let metadata_node = node::node_to_file_metadata(node_link.node);
-        let metadata_block_index = NodeFileMetadataBlock::index(metadata_node);
-        let metadata_node_index = NodeFileMetadata::index(metadata_node);
-
-        let metadata_block = state_staged
-            .block_file_metadata(repository.clone(), metadata_block_index)
-            .await
-            .forward::<MergeError>("deserializing staged metadata block")?;
-
-        let dirtied = {
-            let mut block_writer = metadata_block.write();
-            let node = block_writer.node(metadata_node_index);
-
-            node.metadata = metadata_hash;
-
-            block_writer.mark_dirty()
-        };
-
-        if dirtied {
-            state_staged.block_file_metadata_modified(metadata_block, metadata_block_index);
-            state_staged.mark_dirty();
+            metadata_hash = node.metadata;
+        } else {
+            lore_debug!(
+                "Merge metadata skipped due to missing 'source' node for {}",
+                path
+            );
+            return Ok(());
         }
 
-        lore_trace!("Merged metadata for {}", change.path());
-    } else {
-        lore_debug!(
-            "Merge metadata skipped due to missing 'staged' node for {}",
-            change.path()
-        );
-        return Ok(());
-    }
+        if let Ok(node_link) = state_staged
+            .find_node_link(repository.clone(), path.as_str())
+            .await
+            && node_link.is_valid()
+        {
+            let metadata_node = node::node_to_file_metadata(node_link.node);
+            let metadata_block_index = NodeFileMetadataBlock::index(metadata_node);
+            let metadata_node_index = NodeFileMetadata::index(metadata_node);
 
-    Ok(())
+            let metadata_block = state_staged
+                .block_file_metadata(repository.clone(), metadata_block_index)
+                .await
+                .forward::<MergeError>("deserializing staged metadata block")?;
+
+            let dirtied = {
+                let mut block_writer = metadata_block.write();
+                let node = block_writer.node(metadata_node_index);
+
+                node.metadata = metadata_hash;
+
+                block_writer.mark_dirty()
+            };
+
+            if dirtied {
+                state_staged.block_file_metadata_modified(metadata_block, metadata_block_index);
+                state_staged.mark_dirty();
+            }
+
+            lore_trace!("Merged metadata for {}", path);
+        } else {
+            lore_debug!(
+                "Merge metadata skipped due to missing 'staged' node for {}",
+                path
+            );
+            return Ok(());
+        }
+
+        Ok(())
+    }
 }
 
 async fn merge_file_metadata(
@@ -4045,14 +4053,15 @@ async fn merge_file_metadata(
 ) -> Result<(), MergeError> {
     let mut tasks = JoinSet::new();
     for change in changes.iter() {
-        let repository = repository.clone();
-        let state_source = state_source.clone();
-        let state_staged = state_staged.clone();
-        let change = change.clone();
-
-        lore_spawn!(tasks, {
-            async move { merge_metadata_task(repository, change, state_source, state_staged).await }
-        });
+        lore_spawn!(
+            tasks,
+            merge_metadata_task(
+                repository.clone(),
+                change.path().clone(),
+                state_source.clone(),
+                state_staged.clone(),
+            )
+        );
     }
 
     let mut failure = None;
@@ -4253,6 +4262,7 @@ async fn merge_into_link(
         state_branch.clone(),
         state_new.clone(),
         true,
+        Arc::new(StoreRequestTracker::default()),
     )
     .await
     .forward::<MergeError>("collecting new fragments")?;
@@ -4610,6 +4620,7 @@ pub async fn merge_into(
         state_branch.clone(),
         state_new.clone(),
         true, /* Ignore already durably stored fragments */
+        Arc::new(StoreRequestTracker::default()),
     )
     .await
     .forward::<MergeError>("collecting new fragments")?;

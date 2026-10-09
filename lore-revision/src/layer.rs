@@ -107,7 +107,7 @@ impl EventError for LayerError {
 
 /// Data for the event emitted when a layer is added.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreLayerAddEventData {
     /// Path in the outer repository where the layer is placed.
@@ -124,7 +124,7 @@ pub struct LoreLayerAddEventData {
 
 /// Data for the event describing a single configured layer.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreLayerEntryEventData {
     /// Path in the outer repository where the layer is placed.
@@ -141,7 +141,7 @@ pub struct LoreLayerEntryEventData {
 
 /// Data for the event describing a layer that has staged changes.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreLayerStagedEntryEventData {
     /// Path in the outer repository where the layer is placed.
@@ -154,7 +154,7 @@ pub struct LoreLayerStagedEntryEventData {
 
 /// Data for the event emitted when a layer is removed.
 #[repr(C)]
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, bitcode::Encode, bitcode::Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LoreLayerRemoveEventData {
     /// Path in the outer repository where the layer was placed.
@@ -1302,18 +1302,12 @@ pub async fn store_staged_or_clear(
     layer: &Layer,
     state: &LayerState,
 ) -> Result<Hash, LayerError> {
-    let has_staged = state
+    let signature = if state
         .state_staged
-        .node_has_staged_children(state.repository.clone(), crate::node::ROOT_NODE)
+        .node_has_staged_or_dirty_children(state.repository.clone(), crate::node::ROOT_NODE)
         .await
-        .forward::<LayerError>("Failed to check staged nodes")?;
-    let has_dirty = state
-        .state_staged
-        .node_has_dirty_children(state.repository.clone(), crate::node::ROOT_NODE)
-        .await
-        .forward::<LayerError>("Failed to check dirty nodes")?;
-
-    let signature = if has_staged || has_dirty {
+        .forward::<LayerError>("Failed to check staged and dirty nodes")?
+    {
         state.state_staged.mark_dirty();
         state
             .state_staged
