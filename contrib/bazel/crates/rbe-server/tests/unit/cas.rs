@@ -6,6 +6,264 @@ use rbe_server::cas::*;
 
 const H: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn action_cache_misses_for_unverifiable_directory_entries() {
+    use lore_base::test_util::TempDir;
+    use rbe_lore::LoreBlobStore;
+    use rbe_proto::reapi::ActionResult;
+    use rbe_proto::reapi::Digest;
+    use rbe_proto::reapi::OutputDirectory;
+    use rbe_proto::reapi::OutputFile;
+
+    let temporary = TempDir::new("rbe-invalid-outputs-");
+    let store = LoreBlobStore::open(temporary.path().to_str().unwrap(), 0, None)
+        .await
+        .unwrap();
+    let action = digest::of(b"invalid-action");
+    for result in [
+        ActionResult {
+            output_files: vec![OutputFile {
+                path: "missing-digest".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        ActionResult {
+            output_directories: vec![OutputDirectory {
+                path: "missing-tree".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        ActionResult {
+            output_directories: vec![OutputDirectory {
+                path: "directory-only".into(),
+                root_directory_digest: Some(digest::of(b"")),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        ActionResult {
+            output_directories: vec![OutputDirectory {
+                path: "oversized-tree".into(),
+                tree_digest: Some(Digest {
+                    hash: H.into(),
+                    size_bytes: 16 * 1024 * 1024 + 1,
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    ] {
+        rbe_server::ac::store_result(&store, &action, &result)
+            .await
+            .unwrap();
+        assert!(
+            rbe_server::ac::lookup(&store, &action, true)
+                .await
+                .is_none()
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn action_cache_misses_when_a_tree_file_is_missing() {
+    use lore_base::test_util::TempDir;
+    use prost::Message;
+    use rbe_lore::LoreBlobStore;
+    use rbe_lore::Ns;
+    use rbe_proto::reapi::ActionResult;
+    use rbe_proto::reapi::Digest;
+    use rbe_proto::reapi::Directory;
+    use rbe_proto::reapi::FileNode;
+    use rbe_proto::reapi::OutputDirectory;
+    use rbe_proto::reapi::Tree;
+
+    let temporary = TempDir::new("rbe-tree-cache-");
+    let store = LoreBlobStore::open(temporary.path().to_str().unwrap(), 0, None)
+        .await
+        .unwrap();
+    let payload = b"missing-file-data";
+    let file_digest = digest::of(payload);
+    let tree = Tree {
+        root: Some(Directory {
+            files: vec![FileNode {
+                name: "missing.bin".into(),
+                digest: Some(file_digest.clone()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let bytes = tree.encode_to_vec();
+    let tree_digest = Digest {
+        hash: digest::sha256_hex(&bytes),
+        size_bytes: bytes.len() as i64,
+    };
+    store
+        .put(Ns::Cas, &tree_digest.hash, tree_digest.size_bytes, &bytes)
+        .await
+        .unwrap();
+    let action_digest = Digest {
+        hash: digest::sha256_hex(b"action"),
+        size_bytes: 6,
+    };
+    let result = ActionResult {
+        output_directories: vec![OutputDirectory {
+            path: "out".into(),
+            tree_digest: Some(tree_digest),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    rbe_server::ac::store_result(&store, &action_digest, &result)
+        .await
+        .unwrap();
+    assert!(
+        rbe_server::ac::lookup(&store, &action_digest, true)
+            .await
+            .is_none()
+    );
+    store
+        .put(Ns::Cas, &file_digest.hash, file_digest.size_bytes, payload)
+        .await
+        .unwrap();
+    assert!(
+        rbe_server::ac::lookup(&store, &action_digest, true)
+            .await
+            .is_some()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn action_cache_verifies_nested_tree_outputs() {
+    use lore_base::test_util::TempDir;
+    use prost::Message;
+    use rbe_lore::LoreBlobStore;
+    use rbe_lore::Ns;
+    use rbe_proto::reapi::ActionResult;
+    use rbe_proto::reapi::Directory;
+    use rbe_proto::reapi::DirectoryNode;
+    use rbe_proto::reapi::FileNode;
+    use rbe_proto::reapi::OutputDirectory;
+    use rbe_proto::reapi::Tree;
+
+    let temporary = TempDir::new("rbe-nested-tree-");
+    let store = LoreBlobStore::open(temporary.path().to_str().unwrap(), 0, None)
+        .await
+        .unwrap();
+    let payload = b"nested-file";
+    let file_digest = digest::of(payload);
+    let child = Directory {
+        files: vec![FileNode {
+            name: "file.bin".into(),
+            digest: Some(file_digest.clone()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let root = Directory {
+        directories: vec![DirectoryNode {
+            name: "child".into(),
+            digest: Some(digest::of(&child.encode_to_vec())),
+        }],
+        ..Default::default()
+    };
+    let action = digest::of(b"nested-action");
+    for (children, expected) in [(vec![], false), (vec![child.clone()], false)] {
+        let bytes = Tree {
+            root: Some(root.clone()),
+            children,
+        }
+        .encode_to_vec();
+        let tree = digest::of(&bytes);
+        store
+            .put(Ns::Cas, &tree.hash, tree.size_bytes, &bytes)
+            .await
+            .unwrap();
+        let result = ActionResult {
+            output_directories: vec![OutputDirectory {
+                path: "out".into(),
+                tree_digest: Some(tree),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        rbe_server::ac::store_result(&store, &action, &result)
+            .await
+            .unwrap();
+        assert_eq!(
+            rbe_server::ac::lookup(&store, &action, true)
+                .await
+                .is_some(),
+            expected
+        );
+    }
+    store
+        .put(Ns::Cas, &file_digest.hash, file_digest.size_bytes, payload)
+        .await
+        .unwrap();
+    assert!(
+        rbe_server::ac::lookup(&store, &action, true)
+            .await
+            .is_some()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn action_cache_rejects_malformed_trees_and_accepts_empty_directories() {
+    use lore_base::test_util::TempDir;
+    use prost::Message;
+    use rbe_lore::LoreBlobStore;
+    use rbe_lore::Ns;
+    use rbe_proto::reapi::ActionResult;
+    use rbe_proto::reapi::Directory;
+    use rbe_proto::reapi::OutputDirectory;
+    use rbe_proto::reapi::Tree;
+
+    let temporary = TempDir::new("rbe-malformed-tree-");
+    let store = LoreBlobStore::open(temporary.path().to_str().unwrap(), 0, None)
+        .await
+        .unwrap();
+    let action = digest::of(b"malformed-action");
+    for (bytes, expected) in [
+        (b"not a protobuf tree".to_vec(), false),
+        (Tree::default().encode_to_vec(), false),
+        (
+            Tree {
+                root: Some(Directory::default()),
+                ..Default::default()
+            }
+            .encode_to_vec(),
+            true,
+        ),
+    ] {
+        let tree = digest::of(&bytes);
+        store
+            .put(Ns::Cas, &tree.hash, tree.size_bytes, &bytes)
+            .await
+            .unwrap();
+        let result = ActionResult {
+            output_directories: vec![OutputDirectory {
+                path: "out".into(),
+                tree_digest: Some(tree),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        rbe_server::ac::store_result(&store, &action, &result)
+            .await
+            .unwrap();
+        assert_eq!(
+            rbe_server::ac::lookup(&store, &action, true)
+                .await
+                .is_some(),
+            expected
+        );
+    }
+}
+
 #[test]
 fn parses_plain_and_compressed_resources() {
     let r = parse_resource(&format!("blobs/{H}/42")).unwrap();

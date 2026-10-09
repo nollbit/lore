@@ -371,8 +371,12 @@ the inputs change.
 
 `--verify-ac` checks that the blobs an Action Cache entry references are still in the CAS before
 serving it. Lore's GC can evict a blob while the entry survives, and serving that entry fails the
-build with a missing output instead of re-running the action. It costs one batched existence check
-per hit.
+build with a missing output instead of re-running the action. Tree metadata and its descendant
+file digests are checked, with existence probes batched in groups of 256. Missing or malformed
+trees and incomplete directory references are misses. Verification accepts up to 16 MiB of
+Tree metadata per result, 4,096 directories per Tree and 65,536 blob references per result;
+larger results are misses. Directory-only encodings using `root_directory_digest` are also
+misses. These checks do not pin blobs against concurrent GC.
 
 An Action Cache lookup never fails a build. A read that errored, an entry that does not decode
 and an entry whose outputs are gone are all recoverable by executing the action, so all three are

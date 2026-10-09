@@ -50,4 +50,5 @@ zstd = { workspace = true }
 test-util = []
 
 [dev-dependencies]
+lore-base = { workspace = true, features = ["test-util"] }
 rbe-server = { path = ".", features = ["test-util"] }
