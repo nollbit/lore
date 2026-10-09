@@ -7,6 +7,7 @@
 //! the action entirely -- no upload, no execution, just the output digests. Everything the
 //! result points at lives in the CAS half of the same Lore store.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -16,6 +17,7 @@ use rbe_lore::digest::key_of;
 use rbe_proto::reapi::ActionResult;
 use rbe_proto::reapi::Digest;
 use rbe_proto::reapi::GetActionResultRequest;
+use rbe_proto::reapi::Tree;
 use rbe_proto::reapi::UpdateActionResultRequest;
 use rbe_proto::reapi::action_cache_server::ActionCache;
 use tonic::Request;
@@ -42,7 +44,8 @@ impl ActionCacheService {
 ///
 /// `verify` additionally checks that the blobs the result names are still in the CAS. Lore's GC
 /// can evict one while the entry survives, and serving that entry fails the build with a missing
-/// output instead of re-running the action. It costs one batched existence check per hit.
+/// output instead of re-running the action. Tree metadata is decoded and its file references
+/// are checked in bounded batches.
 pub async fn lookup(
     store: &LoreBlobStore,
     action_digest: &Digest,
@@ -91,7 +94,13 @@ pub async fn lookup(
 
 /// Whether every blob `result` names is still in the CAS.
 async fn outputs_present(store: &LoreBlobStore, result: &ActionResult) -> bool {
-    let referenced: Vec<Digest> = result
+    const MAX_TREE_BYTES: usize = 16 * 1024 * 1024;
+    const MAX_DIRECTORY_COUNT: usize = 4096;
+    const MAX_REFERENCES: usize = 65536;
+    if result.output_files.iter().any(|file| file.digest.is_none()) {
+        return false;
+    }
+    let mut referenced: Vec<Digest> = result
         .output_files
         .iter()
         .filter_map(|f| f.digest.clone())
@@ -105,17 +114,92 @@ async fn outputs_present(store: &LoreBlobStore, result: &ActionResult) -> bool {
         .chain(result.stderr_digest.clone())
         .filter(|d| !rbe_lore::digest::is_empty_digest(d))
         .collect();
+    if referenced.len() > MAX_REFERENCES {
+        return false;
+    }
+    let mut remaining = MAX_TREE_BYTES;
+    for output in &result.output_directories {
+        // Directory-only encodings are not verified by this Tree-based cache.
+        if output.root_directory_digest.is_some() {
+            return false;
+        }
+        let Some(digest) = &output.tree_digest else {
+            return false;
+        };
+        let Ok(size) = usize::try_from(digest.size_bytes) else {
+            return false;
+        };
+        if size > remaining {
+            return false;
+        }
+        let Ok(Some(bytes)) = store.get(Ns::Cas, &digest.hash, digest.size_bytes).await else {
+            return false;
+        };
+        if bytes.len() != size || rbe_lore::digest::sha256_hex(&bytes) != digest.hash {
+            return false;
+        }
+        remaining -= size;
+        let Ok(tree) = <Tree as prost::Message>::decode(bytes.as_slice()) else {
+            return false;
+        };
+        let Some(root) = tree.root else {
+            return false;
+        };
+        if tree.children.len() >= MAX_DIRECTORY_COUNT {
+            return false;
+        }
+        let directories: Vec<_> = std::iter::once(root).chain(tree.children).collect();
+        let present: HashSet<_> = directories
+            .iter()
+            .map(|directory| {
+                key_of(&rbe_lore::digest::of(&prost::Message::encode_to_vec(
+                    directory,
+                )))
+            })
+            .collect();
+        for directory in directories {
+            for child in directory.directories {
+                if !child
+                    .digest
+                    .as_ref()
+                    .is_some_and(|digest| present.contains(&key_of(digest)))
+                {
+                    return false;
+                }
+            }
+            for file in directory.files {
+                let Some(digest) = file.digest else {
+                    return false;
+                };
+                referenced.push(digest);
+                if referenced.len() > MAX_REFERENCES {
+                    return false;
+                }
+            }
+        }
+    }
+    if referenced.iter().any(|digest| {
+        digest.size_bytes < 0
+            || digest.hash.len() != 64
+            || !digest
+                .hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }) {
+        return false;
+    }
     if referenced.is_empty() {
         return true;
     }
 
     let keys: Vec<_> = referenced.iter().map(key_of).collect();
-    match store.exists_many(Ns::Cas, &keys).await {
-        Ok(present) => present.iter().all(|present| *present),
-        // exists_many already reports a failed probe as absent, so reaching here means the call
-        // itself failed; the entry cannot be shown complete.
-        Err(_) => false,
+    for chunk in keys.chunks(256) {
+        match store.exists_many(Ns::Cas, chunk).await {
+            Ok(present) if present.iter().all(|present| *present) => {}
+            _ => return false,
+        }
     }
+    true
 }
 
 pub async fn store_result(
