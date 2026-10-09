@@ -130,6 +130,7 @@ pub fn spawn_immutable_store_availability_monitor(health: Arc<ServerHealth>) {
 
 #[cfg(test)]
 #[path = "../../tests/unit/store/test_support.rs"]
+#[allow(dead_code)]
 mod test_support;
 #[cfg(test)]
 pub(crate) use test_support::test_store_create;

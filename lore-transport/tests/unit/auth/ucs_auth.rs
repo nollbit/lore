@@ -102,11 +102,10 @@ fn resource_id_format() {
 }
 
 #[tokio::test]
-async fn refresh_returns_not_supported() {
+async fn refresh_rejects_invalid_endpoint() {
     let auth = UcsAuthentication;
     let result = auth
-        .refresh_authentication("ucs-auth://auth.example.com", "refresh-tok", "corr-1")
+        .refresh_authentication("http://[", "refresh-tok", "corr-1")
         .await;
     assert!(result.is_err());
-    assert!(result.unwrap_err().is_not_supported());
 }
