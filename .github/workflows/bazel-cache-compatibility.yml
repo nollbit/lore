@@ -1,0 +1,37 @@
+name: Bazel cache compatibility
+on:
+  pull_request:
+    paths:
+      - 'contrib/bazel/**'
+      - 'lore*/**'
+      - 'vendor/quinn-proto/**'
+      - 'Cargo.toml'
+      - '.github/workflows/bazel-cache-compatibility.yml'
+permissions:
+  contents: read
+env:
+  CARGO_BUILD_JOBS: 2
+  CARGO_PROFILE_TEST_DEBUG: "0"
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libssl-dev pkg-config clang cmake
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+      - name: Install Rust
+        run: rustup toolchain install 1.98.1 --profile minimal && rustup override set 1.98.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contrib/bazel -> target
+      - name: Test cache and index
+        run: cargo test --locked --manifest-path contrib/bazel/Cargo.toml -p rbe-lore -p rbe-server
