@@ -42,6 +42,7 @@ env:
 jobs:
   meta:
     name: resolve tags
+    if: github.repository == 'EpicGames/lore'
     runs-on: ubuntu-latest
     permissions:
       contents: read # metadata-action reads repository metadata for OCI labels
