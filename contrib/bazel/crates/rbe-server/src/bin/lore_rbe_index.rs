@@ -303,12 +303,25 @@ fn set_xattr(path: &Path, name: &CString, value: &[u8]) -> Result<()> {
     let p = c_path(path)?;
     // SAFETY: both strings are NUL-terminated and outlive the call; `value` is valid for its
     // length.
+    #[cfg(not(target_os = "macos"))]
     let rc = unsafe {
         libc::setxattr(
             p.as_ptr(),
             name.as_ptr(),
             value.as_ptr().cast(),
             value.len(),
+            0,
+        )
+    };
+    // SAFETY: the strings and buffer remain valid throughout the call.
+    #[cfg(target_os = "macos")]
+    let rc = unsafe {
+        libc::setxattr(
+            p.as_ptr(),
+            name.as_ptr(),
+            value.as_ptr().cast(),
+            value.len(),
+            0,
             0,
         )
     };
@@ -325,10 +338,18 @@ fn set_xattr(path: &Path, name: &CString, value: &[u8]) -> Result<()> {
 fn remove_xattr(path: &Path, name: &CString) -> Result<()> {
     let p = c_path(path)?;
     // SAFETY: both strings are NUL-terminated and outlive the call.
+    #[cfg(not(target_os = "macos"))]
     let rc = unsafe { libc::removexattr(p.as_ptr(), name.as_ptr()) };
+    // SAFETY: both strings are NUL-terminated and outlive the call.
+    #[cfg(target_os = "macos")]
+    let rc = unsafe { libc::removexattr(p.as_ptr(), name.as_ptr(), 0) };
     if rc != 0 {
         let err = std::io::Error::last_os_error();
-        if err.raw_os_error() != Some(libc::ENODATA) {
+        #[cfg(target_os = "macos")]
+        let missing = libc::ENOATTR;
+        #[cfg(not(target_os = "macos"))]
+        let missing = libc::ENODATA;
+        if err.raw_os_error() != Some(missing) {
             bail!("removexattr {}: {err}", path.display());
         }
     }
