@@ -2395,3 +2395,60 @@ async fn forward_cursor_list_cache_disabled_never_reads_a_wrong_cached_list() {
     }))
     .await;
 }
+
+#[tokio::test]
+async fn forward_cursor_rejects_a_rewound_branch_without_panicking() {
+    for step_keys in [true, false] {
+        for list_cache in [false, true] {
+            let repository = random::<RepositoryId>();
+            let (immutable_store, mutable_store, execution) =
+                test_store_create().await.expect("create stores");
+            Box::pin(LORE_CONTEXT.scope(execution, async move {
+                let context = Arc::new(RepositoryContext::new_server_context(
+                    immutable_store.clone(),
+                    mutable_store.clone(),
+                    repository,
+                ));
+                let (branch_id, signatures) = create_branch_with_history(&context, 50).await;
+                branch::store_latest(
+                    context,
+                    branch_id,
+                    signatures[0],
+                    signatures[40],
+                    branch::BranchLatestStatus::Convergent,
+                )
+                .await
+                .expect("rewind branch");
+                let acceleration = lore_server::grpc::server::RevisionListAcceleration {
+                    step_keys,
+                    list_cache,
+                };
+                let error = handler(
+                    make_request_signature(repository, signatures[25]),
+                    immutable_store.clone(),
+                    mutable_store.clone(),
+                    DEFAULT_HISTORY_STEP_SIZE,
+                    acceleration,
+                    &make_instruments(),
+                )
+                .await
+                .expect_err("a rewound branch cannot provide this forward cursor");
+                assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+                let response = handler(
+                    make_request_identifier(repository, branch_id, 0),
+                    immutable_store,
+                    mutable_store,
+                    DEFAULT_HISTORY_STEP_SIZE,
+                    acceleration,
+                    &make_instruments(),
+                )
+                .await
+                .expect("current branch remains readable")
+                .into_inner();
+                assert_eq!(response.items[0].number, 10);
+                assert!(response.signature_forward.is_none());
+            }))
+            .await;
+        }
+    }
+}

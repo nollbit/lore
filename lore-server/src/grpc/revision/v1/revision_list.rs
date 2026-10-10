@@ -877,7 +877,11 @@ async fn forward_target(
         .into_iter()
         .rev()
         .find(|item| item.number > first_number)
-        .expect("anchor's own item always has number > first_number")
+        .ok_or_else(|| {
+            Status::failed_precondition(
+                "Branch history no longer provides a forward cursor for this revision",
+            )
+        })?
         .signature)
 }
 
@@ -912,11 +916,8 @@ async fn descend_unverified_gap(
 ) -> Result<Hash, Status> {
     let mut hash = anchor;
     let mut prev_state: Option<Arc<state::State>> = None;
-    // Invariant: `last_above` is the most recently visited hash whose
-    // number was confirmed `> first_number` — initially `anchor` itself,
-    // per the caller's guarantee that every `ForwardAnchor` variant is
-    // numbered above `first_number`.
-    let mut last_above = anchor;
+    // Only an observed revision newer than the page can be its forward cursor.
+    let mut last_above = None;
     let mut hops: u64 = 0;
     let mut sealed: u64 = 0;
 
@@ -969,9 +970,13 @@ async fn descend_unverified_gap(
                 {BRANCH} = %branch, %anchor, first_number, hops, sealed,
                 "Forward-cursor gap descent complete",
             );
-            return Ok(last_above);
+            return last_above.ok_or_else(|| {
+                Status::failed_precondition(
+                    "Branch history no longer provides a forward cursor for this revision",
+                )
+            });
         }
-        last_above = hash;
+        last_above = Some(hash);
         hash = current_state.parent_self();
         prev_state = Some(current_state);
     }
