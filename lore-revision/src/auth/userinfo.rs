@@ -9,7 +9,6 @@ use lore_credential::verify_jwt_usage_for_remote;
 use lore_error_set::prelude::*;
 use lore_transport::Connection;
 use lore_transport::UserService;
-use lore_transport::auth::user_service;
 use serde::Serialize;
 
 use crate::errors::*;
@@ -85,14 +84,15 @@ struct UserServiceAccess {
 }
 
 /// Exchanges the caller's authentication token for a repository-scoped one
-/// and looks up the service behind the connection's `user_url`.
+/// and looks up the user directory the connection's server advertises.
 async fn open_user_service(
     remote: &Connection,
     repository: RepositoryId,
     identity: &str,
 ) -> Result<UserServiceAccess, UserInfoError> {
-    let auth_url = remote.auth_url();
-    let user_url = remote.user_url().to_string();
+    let auth_endpoint = remote.auth_endpoint();
+    let directory = remote.user_directory();
+    let user_url = directory.url().to_string();
     let execution = execution_context();
     let globals = execution.globals();
 
@@ -107,18 +107,18 @@ async fn open_user_service(
             globals.identity_token()
         };
         return Ok(UserServiceAccess {
-            service: user_service::find(&user_url),
+            service: directory.service(),
             user_url,
             token: supplied.to_string(),
         });
     }
 
     lore_debug!(
-        "Get authorization token for identity {identity} using auth url {auth_url} for service {user_url}"
+        "Get authorization token for identity {identity} using auth url {auth_endpoint} for service {user_url}"
     );
     let user_domain = get_domain_or_empty(&user_url);
     let token = lore_transport::auth::exchange::exchange(
-        auth_url,
+        auth_endpoint,
         identity,
         repository,
         user_domain.clone(),
@@ -137,7 +137,7 @@ async fn open_user_service(
         .forward::<UserInfoError>("The token is not suitable for the user service")?;
 
     Ok(UserServiceAccess {
-        service: user_service::find(&user_url),
+        service: directory.service(),
         user_url,
         token,
     })
@@ -298,7 +298,7 @@ pub async fn repository_access_token(
 
     lore_debug!("Get authorization token for identity {user_id} using auth url {auth_url}");
     let token = lore_transport::auth::exchange::exchange(
-        auth_url.as_str(),
+        remote.auth_endpoint(),
         user_id.as_str(),
         repository.id,
         remote_domain,

@@ -28,6 +28,8 @@ All keys are snake_case. The config structs are plain serde with no case renamin
 
 Set at create or clone time from the URL you pass (for example `lore://127.0.0.1:41337/my-project`). It may be empty: a repository created with `--offline` (or `--local`) has no remote, and the argument you pass names the repository rather than locating it — `lore --offline repository create my-project`, or no argument at all to name it after the current directory.
 
+The scheme decides whether the client authenticates the server. `lores://` validates the server certificate, and is the scheme used when the URL has none. `lore://` doesn't: the client accepts any certificate on QUIC connections, and sends gRPC requests to the server, access tokens included, without TLS. Use `lore://` only for a server on the same machine, as in the examples on this page. With a `lores://` remote, the client refuses to connect if the server advertises a storage, revision, lock, repository, or notification endpoint whose scheme doesn't authenticate the server.
+
 With no `remote_url`, commands that need the network fail with `NoRemote` rather than attempting a connection. That is a distinct error from `Disconnected`, which means a remote *is* configured but could not be reached.
 
 Treat the field as fixed once the repository exists. Pointing an established repository at a different remote is not generally safe — the shared store is keyed on this value, among other things — so create or clone against the remote you intend to use rather than editing this afterwards. See the [Quickstart](../tutorials/quickstart.md) for how the remote URL is introduced.
@@ -44,15 +46,19 @@ When `identity` is unset and you try to commit, Lore fails with: `No commit iden
 
 ### `[store]` table
 
-The `[store]` table tunes the repository's local stores — the on-disk immutable store (content-addressed fragments) and how much disk it may use before eviction and compaction reclaim space.
+The `[store]` table tunes the repository's local stores — the on-disk immutable store (content-addressed fragments) and how much it may hold before eviction and compaction reclaim space.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `max_capacity` | integer (bytes) | `10485760` (10 MiB) | Maximum capacity of the local immutable store in bytes. |
-| `eviction_delay` | integer (seconds) | `10` | Delay before evicting over-capacity fragments. |
-| `max_size` | integer (bytes) | `10737418240` (10 GiB) | Maximum total store size in bytes before background compaction reclaims space. |
-| `compaction_delay` | integer (seconds) | `30` | Delay between background compaction passes. |
+| `max_capacity` | integer (fragments) | `2000000` | Maximum number of fragments in the local immutable store. Eviction removes the least recently used fragments to hold the store near 70% of it. The periodic eviction pass treats a value below `1048576` as `1048576`. |
+| `eviction_delay` | integer (seconds) | `30` | Interval between background eviction passes. The first pass runs one interval after the store opens. |
+| `max_size` | integer (bytes) | `10737418240` (10 GiB) | Maximum total size of the local immutable store's packfiles. Above it, compaction evicts the least recently used content toward 70% of it and rewrites packfiles to reclaim the space. |
+| `compaction_delay` | integer (seconds) | `50` | Interval before a background compaction pass starts from the beginning. A pass that an earlier command stopped after its first step resumes as soon as the store opens. |
 | `verify_write` | Boolean | unset (behaves as `false`) | Verify each write by reading the data back and rehashing it. |
+
+A command that finds the store over a limit as it loads it starts a pass at once rather than after the interval.
+
+Eviction removes only content the remote also holds, which Lore fetches again when it's next read. Content held only locally, such as commits not yet pushed, counts toward both limits but is never evicted. Once it fills about 70% of a limit, eviction removes the remote content cached beside it. The store keeps its packfiles in 256 groups, and compaction rewrites a group's packfiles only once at least 10% of their bytes are no longer referenced.
 
 The **Default** column shows the value `lore repository create` and `lore clone` write into a freshly generated `config.toml`. A new repository's `[store]` table already contains every field at these values, so editing the file means changing values that are already present rather than adding missing ones.
 
@@ -88,7 +94,7 @@ The table key and both fields accept legacy serde aliases for backward compatibi
 
 A config that uses the legacy names still loads. New configs use the current names.
 
-Lore normally writes this table for you when you clone with `--use-shared-store`. For how shared stores work and how to set one up, see [Step 6 of the Quickstart](../tutorials/quickstart.md#step-6-set-up-a-shared-store-and-clone-a-second-working-tree); for the `lore clone` and `lore shared-store` flags, see the [Lore CLI command reference](lore-cli-commands.md).
+Lore normally writes this table for you when you clone with `--use-shared-store`, or with automatic use turned on by `lore shared-store set-use-automatically true`. For how shared stores work and how to set one up, see [Step 6 of the Quickstart](../tutorials/quickstart.md#step-6-set-up-a-shared-store-and-clone-a-second-working-tree); for running and maintaining many instances over one store, see [Run parallel instances over a shared store](../how-to/run-parallel-instances-over-a-shared-store.md); for the `lore clone` and `lore shared-store` flags, see the [Lore CLI command reference](lore-cli-commands.md).
 
 ## User-level `cli.toml`
 
@@ -193,8 +199,9 @@ remote_url = "lore://127.0.0.1:41337/my-project"
 identity = "alex@example.com"
 
 [store]
-max_capacity = 1073741824   # 1 GiB
-eviction_delay = 30
+max_size = 53687091200    # 50 GiB
+max_capacity = 10000000   # fragments
+eviction_delay = 60
 ```
 
 A repository created by `lore repository create` or `lore clone` already has every `[store]` field populated at its written default, so you edit values that are already present. The `[store]` example above is shown trimmed for clarity.
@@ -224,4 +231,5 @@ pager = "bat --paging=always"
 
 - [Lore Server configuration reference](lore-server-config.md) — the `loreserver` daemon's settings, distinct from the client config on this page.
 - [Quickstart](../tutorials/quickstart.md) — clone, stage, commit, and push your first revision, and set up a shared store.
+- [Run parallel instances over a shared store](../how-to/run-parallel-instances-over-a-shared-store.md) — keep many working trees over one shared store, and move, prune, and remove them.
 - [Lore CLI command reference](lore-cli-commands.md) — the `lore clone`, `lore repository create`, and `lore shared-store` flags that write these files.

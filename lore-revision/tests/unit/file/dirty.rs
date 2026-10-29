@@ -19,8 +19,8 @@ use lore_revision::util::path::RelativePathBuf;
 
 use crate::fs::filesystem_provider::TestFilesystemProvider;
 use crate::fs::filesystem_provider::test_store_create;
-use crate::repository::test_helpers::RepositoryContextCreationArgsExt;
-use crate::repository::test_helpers::default_repository_creation_args;
+use crate::helper::RepositoryContextCreationArgsExt;
+use crate::helper::default_repository_creation_args;
 
 /// Every path a call names is read through the one operation it opens, whatever the call
 /// finds: a provider that freezes hands out one snapshot, and a walk opening a second
@@ -161,18 +161,20 @@ async fn working_tree_repository(
 /// current tree's storage.
 #[cfg(unix)]
 async fn walk_root(repository: &Arc<RepositoryContext>, state: &Arc<State>) -> Arc<DirtyStats> {
-    let walk = DirtyWalk {
-        operation: repository
+    let walk = DirtyWalk::new(
+        repository
             .file_system()
             .begin_operation()
             .await
             .expect("beginning an operation"),
-        repository: repository.clone(),
-        state_current: state.clone(),
-        state_staged: state.clone(),
-        stats: Arc::new(DirtyStats::default()),
-        mask: None,
-    };
+        repository.clone(),
+        state.clone(),
+        state.clone(),
+        Arc::new(DirtyStats::default()),
+        None,
+    )
+    .await
+    .expect("reading the link registry");
     let root = DirtyNodes {
         current: ROOT_NODE,
         staged: ROOT_NODE,

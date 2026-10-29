@@ -18,6 +18,7 @@ use http::Response;
 use lore_base::types::Context as LoreContext;
 use lore_revision::lore::RepositoryId;
 use lore_server::auth::jwt::AuthorizationToken;
+use lore_server::authnz::repository_authorizer::Action;
 use lore_server::authnz::repository_authorizer::Grants;
 use lore_server::authnz::repository_authorizer::PartitionGrants;
 use lore_server::authnz::repository_authorizer::RawToken;
@@ -34,10 +35,13 @@ use tower::Layer;
 use tower::Service;
 
 /// One recorded authorizer question: the token's subject, the
-/// partition, and the action.
-type Asked = (Option<String>, RepositoryId, Option<String>);
+/// partition, and the action, or [`ENUMERATE`] for an enumeration.
+type Asked = (Option<String>, RepositoryId, String);
 
-/// Records every question it is asked and answers with a fixed verdict.
+const ENUMERATE: &str = "<enumerate>";
+
+/// Records every question it is asked and answers with a fixed verdict:
+/// `read` granted, or the partition denied.
 struct RecordingAuthorizer {
     permit: bool,
     asked: Mutex<Vec<Asked>>,
@@ -62,18 +66,35 @@ impl RepositoryAuthorizer for RecordingAuthorizer {
         &self,
         token: Option<&VerifiedToken<'_>>,
         repository_id: RepositoryId,
-        action: Option<&str>,
+        action: Action,
     ) -> Result<(), Status> {
         self.asked.lock().unwrap().push((
             token.map(|token| token.claims.user_id.clone()),
             repository_id,
-            action.map(str::to_string),
+            action.to_string(),
         ));
         if self.permit {
             Ok(())
         } else {
             Err(Status::permission_denied("no grant"))
         }
+    }
+
+    async fn granted_actions(
+        &self,
+        token: Option<&VerifiedToken<'_>>,
+        repository_id: RepositoryId,
+    ) -> Result<Option<Grants>, Status> {
+        self.asked.lock().unwrap().push((
+            token.map(|token| token.claims.user_id.clone()),
+            repository_id,
+            ENUMERATE.to_string(),
+        ));
+        Ok(Some(if self.permit {
+            Grants::Actions([Action::Read.to_string()].into())
+        } else {
+            Grants::Denied
+        }))
     }
 }
 
@@ -111,10 +132,7 @@ fn repository() -> RepositoryId {
 /// Builds the request the layer sees: the interceptor has already run, so
 /// the token halves are extensions and the partition is a binary header.
 fn request(partition: Option<RepositoryId>, token: bool) -> Request<()> {
-    let mut request = Request::builder()
-        .uri("/x.Service/TheRpc")
-        .body(())
-        .unwrap();
+    let mut request = Request::builder().uri("/x.Service/Get").body(()).unwrap();
     if let Some(repository) = partition {
         // Encoded through tonic's own metadata code so the header bytes
         // cannot drift from what the wire carries.
@@ -181,7 +199,7 @@ async fn a_permitted_partition_reaches_the_service() {
         vec![(
             Some("the u".to_string()),
             repository(),
-            Some("write".to_string())
+            ENUMERATE.to_string()
         )]
     );
 }
@@ -218,8 +236,51 @@ async fn a_missing_token_is_the_authorizers_question_too() {
     assert_eq!(inner.calls(), 0);
     assert_eq!(
         authorizer.asked(),
-        vec![(None, repository(), Some("write".to_string()))]
+        vec![(None, repository(), ENUMERATE.to_string())]
     );
+}
+
+/// An authorizer that cannot enumerate is asked `read`, the reachability
+/// question, and its answer decides; no grants are exposed to the handler.
+#[tokio::test]
+async fn a_non_enumerable_authorizer_is_asked_read() {
+    struct PolicyOnly(bool);
+
+    #[async_trait]
+    impl RepositoryAuthorizer for PolicyOnly {
+        async fn check_repository_access(
+            &self,
+            _token: Option<&VerifiedToken<'_>>,
+            _repository_id: RepositoryId,
+            action: Action,
+        ) -> Result<(), Status> {
+            assert_eq!(action, Action::Read);
+            if self.0 {
+                Ok(())
+            } else {
+                Err(Status::permission_denied("no grant"))
+            }
+        }
+    }
+
+    let inner = GrantsInner::default();
+    let mut service =
+        PartitionAccessLayer::new(Arc::new(PolicyOnly(true)), TEST_TIMEOUT).layer(inner.clone());
+    service
+        .call(request(Some(repository()), true))
+        .await
+        .unwrap();
+    assert_eq!(*inner.0.lock().unwrap(), vec![None]);
+
+    let inner = GrantsInner::default();
+    let mut service =
+        PartitionAccessLayer::new(Arc::new(PolicyOnly(false)), TEST_TIMEOUT).layer(inner.clone());
+    let response = service
+        .call(request(Some(repository()), true))
+        .await
+        .unwrap();
+    assert_eq!(status_of(&response).code(), Code::PermissionDenied);
+    assert!(inner.0.lock().unwrap().is_empty());
 }
 
 /// Partition metadata that is present but undecodable is refused, not
@@ -269,7 +330,7 @@ impl RepositoryAuthorizer for EnumeratingAuthorizer {
         &self,
         _token: Option<&VerifiedToken<'_>>,
         _repository_id: RepositoryId,
-        _action: Option<&str>,
+        _action: Action,
     ) -> Result<(), Status> {
         self.checks.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -312,12 +373,83 @@ impl Service<Request<()>> for GrantsInner {
     }
 }
 
+/// Each method asks for the action it needs, and `read` grants only the
+/// browsing ones.
+#[tokio::test]
+async fn read_grants_allow_browsing_but_deny_mutations() {
+    for method in [
+        "BranchGet",
+        "RevisionTree",
+        "RevisionDiff",
+        "Get",
+        "MutableLoad",
+        "RepositoryMetadataGet",
+        "BranchPush",
+        "Put",
+        "MutableStore",
+        "RepositoryDelete",
+        "BranchProtect",
+    ] {
+        let authorizer = EnumeratingAuthorizer::new(Grants::Actions(["read".to_string()].into()));
+        let (mut service, inner) =
+            service_with(PartitionAccessLayer::new(authorizer, TEST_TIMEOUT));
+        let mut req = request(Some(repository()), true);
+        *req.uri_mut() = format!("/x.Service/{method}").parse().unwrap();
+        let response = service.call(req).await.unwrap();
+        let allowed = matches!(
+            method,
+            "BranchGet"
+                | "RevisionTree"
+                | "RevisionDiff"
+                | "Get"
+                | "MutableLoad"
+                | "RepositoryMetadataGet"
+        );
+        assert_eq!(inner.calls(), usize::from(allowed), "{method}");
+        if !allowed {
+            assert_eq!(status_of(&response).code(), Code::PermissionDenied);
+        }
+    }
+}
+
+/// Methods that admit several actions pass with any one of them, and no
+/// grant stands in for one the method does not name.
+#[tokio::test]
+async fn each_method_admits_only_its_own_actions() {
+    for (method, held, allowed) in [
+        ("Verify", "read", true),
+        ("Verify", "write", false),
+        ("BranchPush", "push-protected", true),
+        ("BranchPush", "admin", false),
+        ("BranchProtect", "owner", true),
+        ("BranchProtect", "write", false),
+        ("BranchMetadataSet", "admin", true),
+        ("BranchMetadataSet", "write", false),
+        ("Unlock", "admin", true),
+        ("Unlock", "read", false),
+        ("AdminLock", "migrate", true),
+        ("AdminLock", "admin", false),
+        ("Get", "write", false),
+    ] {
+        let authorizer = EnumeratingAuthorizer::new(Grants::Actions([held.to_string()].into()));
+        let (mut service, inner) =
+            service_with(PartitionAccessLayer::new(authorizer, TEST_TIMEOUT));
+        let mut req = request(Some(repository()), true);
+        *req.uri_mut() = format!("/x.Service/{method}").parse().unwrap();
+        let response = service.call(req).await.unwrap();
+        assert_eq!(inner.calls(), usize::from(allowed), "{method} with {held}");
+        if !allowed {
+            assert_eq!(status_of(&response).code(), Code::PermissionDenied);
+        }
+    }
+}
+
 /// One enumeration serves both halves: reachability is answered from it
 /// and the handler receives it as an extension naming the partition, so
 /// an action check needs no second authorizer call.
 #[tokio::test]
 async fn an_enumeration_is_exposed_to_the_handler_and_answers_reachability() {
-    let grants = Grants::Actions(["write".to_string()].into());
+    let grants = Grants::Actions(["read".to_string(), "migrate".to_string()].into());
     let authorizer = EnumeratingAuthorizer::new(grants.clone());
     let inner = GrantsInner::default();
     let mut service =
@@ -336,12 +468,13 @@ async fn an_enumeration_is_exposed_to_the_handler_and_answers_reachability() {
     );
 }
 
-/// An anonymous caller reaches the service when the authorizer permits
-/// (the no-auth server under allow-all) but is exposed no grants, so a
-/// handler's action check still finds nothing to grant.
+/// An anonymous caller (the no-auth server) is exposed whatever the
+/// authorizer enumerates for it, like any other caller: allow-all's fixed
+/// set holds no action that elevates anyone.
 #[tokio::test]
-async fn an_anonymous_caller_is_exposed_no_grants() {
-    let authorizer = EnumeratingAuthorizer::new(Grants::All);
+async fn an_anonymous_caller_is_exposed_the_enumerated_grants() {
+    let grants = Grants::Actions([Action::Read.to_string()].into());
+    let authorizer = EnumeratingAuthorizer::new(grants.clone());
     let inner = GrantsInner::default();
     let mut service =
         PartitionAccessLayer::new(authorizer.clone(), TEST_TIMEOUT).layer(inner.clone());
@@ -351,7 +484,7 @@ async fn an_anonymous_caller_is_exposed_no_grants() {
         .await
         .unwrap();
 
-    assert_eq!(*inner.0.lock().unwrap(), vec![None]);
+    assert_eq!(*inner.0.lock().unwrap(), vec![Some((repository(), grants))]);
 }
 
 /// An enumeration holding no access denies without consulting the
@@ -388,7 +521,7 @@ async fn a_failing_enumeration_denies() {
             &self,
             _token: Option<&VerifiedToken<'_>>,
             _repository_id: RepositoryId,
-            _action: Option<&str>,
+            _action: Action,
         ) -> Result<(), Status> {
             unreachable!("the failed enumeration is the verdict");
         }
@@ -428,7 +561,7 @@ async fn a_stalled_authorizer_times_out_with_the_authorization_status() {
             &self,
             _token: Option<&VerifiedToken<'_>>,
             _repository_id: RepositoryId,
-            _action: Option<&str>,
+            _action: Action,
         ) -> Result<(), Status> {
             std::future::pending().await
         }
@@ -472,7 +605,7 @@ async fn the_authorization_timeout_does_not_bound_the_inner_service() {
             &self,
             _token: Option<&VerifiedToken<'_>>,
             _repository_id: RepositoryId,
-            _action: Option<&str>,
+            _action: Action,
         ) -> Result<(), Status> {
             Ok(())
         }
@@ -483,7 +616,7 @@ async fn the_authorization_timeout_does_not_bound_the_inner_service() {
             _repository_id: RepositoryId,
         ) -> Result<Option<Grants>, Status> {
             tokio::time::sleep(self.0).await;
-            Ok(Some(Grants::All))
+            Ok(Some(Grants::Actions([Action::Read.to_string()].into())))
         }
     }
 
@@ -544,7 +677,6 @@ mod behind_the_interceptor {
     use jsonwebtoken::encode;
     use lore_server::auth::jwk::JWKService;
     use lore_server::auth::jwk::JWKServiceError;
-    use lore_server::auth::jwt::DEFAULT_IDENTITY_CLAIM;
     use lore_server::auth::jwt::JwtVerifier;
     use lore_server::auth::jwt_interceptor::JWTInterceptor;
     use serde_json::json;
@@ -592,7 +724,6 @@ mod behind_the_interceptor {
             jwt_issuer: None,
             jwt_audience: Some(vec!["Lore".to_string()]),
             jwt_typ: None,
-            identity_claim: DEFAULT_IDENTITY_CLAIM.to_string(),
         }));
         let inner = Inner::default();
         let mut stack = InterceptedService::new(
@@ -637,7 +768,7 @@ mod behind_the_interceptor {
             vec![(
                 Some("the bearer".to_string()),
                 repository(),
-                Some("write".to_string())
+                ENUMERATE.to_string()
             )]
         );
     }

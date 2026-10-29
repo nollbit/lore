@@ -29,7 +29,6 @@ use crate::repository::StoreConfig;
 use crate::shared_store::registry::SharedStoreRegistry;
 use crate::store::immutable;
 use crate::store::immutable::ImmutableStoreCreateOptions;
-use crate::store::immutable::ImmutableStoreSettings;
 use crate::store::mutable;
 use crate::util;
 use crate::util::config;
@@ -178,20 +177,28 @@ pub async fn create_shared_store(
     };
     let shared_store_path = directory_containing_shared_store.join(SHARED_STORE_DIR);
 
+    if shared_store_path.exists() && !global_cli_args.force() {
+        return Err(SharedStoreError::internal(format!(
+            "Found existing shared store at {}",
+            shared_store_path.display()
+        )));
+    }
+
+    if global_cli_args.dry_run() {
+        LoreEvent::SharedStoreCreate(LoreSharedStoreCreateEventData {
+            path: LoreString::from_str(&shared_store_path.display().to_string()),
+        })
+        .send();
+        return Ok(());
+    }
+
     if shared_store_path.exists() {
-        if global_cli_args.force() {
-            lore_io::IoDriver::global()
-                .remove_dir_all(&shared_store_path)
-                .await
-                .internal_with(|| {
-                    format!("removing shared store at {}", shared_store_path.display())
-                })?;
-        } else {
-            return Err(SharedStoreError::internal(format!(
-                "Found existing shared store at {}",
-                shared_store_path.display()
-            )));
-        }
+        lore_io::IoDriver::global()
+            .remove_dir_all(&shared_store_path)
+            .await
+            .internal_with(|| {
+                format!("removing shared store at {}", shared_store_path.display())
+            })?;
     }
 
     create_shared_store_at(
@@ -247,15 +254,13 @@ async fn create_shared_store_at(
         Some(shared_store_path),
         options,
         false,
-        ImmutableStoreSettings {
-            protect_local_fragment: true, /* Protect local fragments from eviction */
-            verify_write: shared_store_config
+        immutable::client_settings(
+            shared_store_config
                 .store_config
                 .as_ref()
                 .and_then(|config| config.verify_write)
                 .unwrap_or_default(),
-            ..Default::default()
-        },
+        ),
     )
     .await
     .forward::<SharedStoreError>("creating immutable store")?;
@@ -407,6 +412,15 @@ pub async fn ensure_shared_store_for_repo(
     }
 
     let shared_store_path = directory_with_shared_store.join(SHARED_STORE_DIR);
+    // A store created here outlives the dry run, which removes only what it made in the
+    // repository's own directory.
+    if execution_context().globals().dry_run() {
+        return Err(SharedStoreError::internal(format!(
+            "--dry-run would create a shared store at {}, create it with `lore shared-store \
+             create` first",
+            shared_store_path.display()
+        )));
+    }
     let migrated = match directory_with_shared_store.parent() {
         Some(base) => {
             migrate_legacy_store_in_base(base, &shared_store_path, &config.remote_url).await?
@@ -498,7 +512,9 @@ async fn load_shared_store_config(
         let legacy_config = config::load::<SharedStoreConfig>(&legacy_config_path)
             .await
             .forward::<SharedStoreError>("Loading legacy shared store config");
-        if let Ok(legacy_config) = legacy_config.as_ref() {
+        if let Ok(legacy_config) = legacy_config.as_ref()
+            && !execution_context().globals().dry_run()
+        {
             config::save(legacy_config, config_path)
                 .await
                 .forward::<SharedStoreError>("migrating global config")?;

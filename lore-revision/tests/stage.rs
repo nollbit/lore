@@ -1091,21 +1091,6 @@ mod tests {
 
                 // Keep puts the file system back to what the tree holds, for the
                 // directory and for everything that was under it.
-                for entry in std::fs::read_dir(path.as_path()).expect("read root") {
-                    let entry = entry.expect("entry");
-                    println!(
-                        "ROOT: {:?} dir={}",
-                        entry.file_name(),
-                        entry.path().is_dir()
-                    );
-                    if entry.path().is_dir()
-                        && entry.file_name().to_string_lossy().to_lowercase() == "assets"
-                    {
-                        for sub in std::fs::read_dir(entry.path()).expect("read sub") {
-                            println!("   SUB: {:?}", sub.expect("sub").file_name());
-                        }
-                    }
-                }
                 assert_eq!(
                     vec!["Assets".to_string()],
                     names_folding_to(path.as_path(), "assets")
@@ -1152,6 +1137,118 @@ mod tests {
                     child = block.node(index).sibling();
                 }
                 assert_eq!(children, vec!["Assets".to_string()]);
+                for name in ["first.file", "second.file"] {
+                    let node_link = state
+                        .find_node_link(repository.clone(), &format!("Assets/{name}"))
+                        .await
+                        .expect("Failed to find the node");
+                    let node = state
+                        .node(repository.clone(), node_link.node)
+                        .await
+                        .expect("Failed to load the node");
+                    assert!(node.is_staged_add(), "{name} must stay staged as an add");
+                    assert_eq!(
+                        state
+                            .node_path(repository.clone(), node_link.node)
+                            .await
+                            .expect("Failed to read the node path"),
+                        format!("Assets/{name}")
+                    );
+                }
+            }))
+            .await
+            .expect("Test task failed");
+    }
+
+    /// Whether the file system under `dir` holds one case variation of a name and answers
+    /// lookups in any other. A mount can be either on any platform, so a test that needs two
+    /// spellings to be two paths asks rather than assumes.
+    fn case_insensitive(dir: &std::path::Path) -> bool {
+        let probe = dir.join("CaseProbe");
+        std::fs::write(&probe, b"").expect("write probe");
+        let insensitive = std::fs::metadata(dir.join("caseprobe")).is_ok();
+        std::fs::remove_file(&probe).expect("remove probe");
+        insensitive
+    }
+
+    /// Committed files under a directory the file system now spells in another case, staged
+    /// together under `Keep`: the shared directory is renamed back to the tree's case while it is
+    /// pre-created, so the walk of each file has to start from that name and not from the one it
+    /// was given. Only a case-sensitive file system can tell the two apart.
+    #[tokio::test]
+    #[allow(clippy::large_futures)]
+    async fn stage_keep_case_of_a_committed_directory_two_targets_share() {
+        let (immutable_store, mutable_store, execution) =
+            test_store_create().await.expect("Failed to create stores");
+        let repository_id = RepositoryId::from(uuid::Uuid::now_v7());
+
+        #[allow(clippy::disallowed_methods)]
+        runtime()
+            .spawn(LORE_CONTEXT.scope(execution.clone(), async move {
+                let fixture =
+                    test_repository_create(immutable_store, mutable_store, repository_id).await;
+                if case_insensitive(&fixture.path) {
+                    return;
+                }
+                let committed = fixture.path.join("Game").join("Fyre");
+                std::fs::create_dir_all(&committed).expect("Create directory failed");
+                for name in ["a.txt", "b.txt", "c.txt"] {
+                    test_file_write(&committed.join(name), name.as_bytes());
+                }
+                test_commit_tree(&fixture, "Initial").await;
+
+                let lowered = fixture.path.join("Game").join("fyre");
+                std::fs::rename(&committed, &lowered).expect("rename to lowercase");
+                test_file_write(&lowered.join("a.txt"), b"a changed");
+                test_file_write(&lowered.join("b.txt"), b"b changed");
+
+                let signature = file::stage::stage(
+                    fixture.repository.clone(),
+                    &fixture.write_token,
+                    LoreArray::from_vec(vec![
+                        LoreString::from(&lowered.join("a.txt")),
+                        LoreString::from(&lowered.join("b.txt")),
+                    ]),
+                    StageOptions {
+                        case_change: stage::StageCaseChange::Keep,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .expect("Failed to stage the case variation");
+
+                assert_eq!(
+                    vec!["Fyre".to_string()],
+                    names_folding_to(&fixture.path.join("Game"), "fyre"),
+                    "Keep puts the directory back in the tree's case"
+                );
+
+                let repository = fixture.repository.clone();
+                let state = state::State::deserialize(repository.clone(), signature)
+                    .await
+                    .expect("Failed to deserialize the staged state");
+                for (name, staged) in [("a.txt", true), ("b.txt", true), ("c.txt", false)] {
+                    let node_link = state
+                        .find_node_link(repository.clone(), &format!("Game/Fyre/{name}"))
+                        .await
+                        .expect("Failed to find the node");
+                    let node = state
+                        .node(repository.clone(), node_link.node)
+                        .await
+                        .expect("Failed to load the node");
+                    assert_eq!(
+                        (node.is_staged_modify(), node.is_staged_delete()),
+                        (staged, false),
+                        "{name} must be staged modified only where it was given"
+                    );
+                    assert_eq!(
+                        state
+                            .node_path(repository.clone(), node_link.node)
+                            .await
+                            .expect("Failed to read the node path"),
+                        format!("Game/Fyre/{name}")
+                    );
+                }
             }))
             .await
             .expect("Test task failed");
@@ -2059,6 +2156,375 @@ mod tests {
             .await
             .expect("Failed to deserialize the staged state");
         staged_file_listing(repository.clone(), staged).await
+    }
+
+    /// A repository with one file committed on a branch whose metadata `status` reads, a context
+    /// over it reading through an [`HoldingFilesystem`], that filesystem, and the revision
+    /// committed.
+    async fn exact_fixture(
+        immutable_store: Arc<dyn lore_storage::immutable_store::ImmutableStore>,
+        mutable_store: Arc<dyn lore_storage::mutable_store::MutableStore>,
+    ) -> (
+        TestRepository,
+        Arc<RepositoryContext>,
+        Arc<HoldingFilesystem>,
+        Hash,
+    ) {
+        let instance = test_repository_create(
+            immutable_store,
+            mutable_store,
+            RepositoryId::from(uuid::Uuid::now_v7()),
+        )
+        .await;
+        let (_, branch_id) = instance::load_current_anchor_boxed(&instance.repository)
+            .await
+            .expect("Failed to load the anchor");
+        branch::create(
+            instance.repository.clone(),
+            &instance.write_token,
+            branch_id,
+            branch::DEFAULT_DEFAULT_NAME,
+            branch::default_category(),
+            "test-user",
+            0,
+            vec![],
+            false,
+            false,
+        )
+        .await
+        .expect("Failed to create the branch metadata");
+        test_file_write(&instance.path.join("seed.txt"), b"seed");
+        let committed = test_commit_tree(&instance, "Seed").await.revision();
+        let (exact, filesystem) = test_holding_context(&instance.repository);
+        (instance, exact, filesystem, committed)
+    }
+
+    /// Stages the root of `instance` through `repository`, trusting dirty flags.
+    async fn stage_root(instance: &TestRepository, repository: Arc<RepositoryContext>) -> Hash {
+        file::stage::stage(
+            repository,
+            &instance.write_token,
+            LoreArray::from_vec(vec![LoreString::from(&instance.path)]),
+            StageOptions::default(),
+        )
+        .await
+        .expect("Stage failed")
+    }
+
+    /// Over a provider that holds its state, whose diff is exact, a directory stage stages what the
+    /// diff finds with nothing marked before it, reading the marks and the content through one
+    /// operation. Over the OS provider the same stage trusts the dirty flags and stages nothing.
+    #[tokio::test]
+    async fn a_directory_stage_over_an_exact_diff_stages_what_nothing_marked() {
+        let (immutable_store, mutable_store, execution) =
+            test_store_create().await.expect("Failed to create stores");
+
+        runtime()
+            .spawn(LORE_CONTEXT.scope(execution, async move {
+                let (instance, exact, filesystem, committed) =
+                    exact_fixture(immutable_store, mutable_store).await;
+                test_file_write(&instance.path.join("added.txt"), b"added");
+
+                let trusting = stage_root(&instance, instance.repository.clone()).await;
+                assert_eq!(trusting, committed, "the fixture staged an unmarked file");
+
+                let staged = stage_root(&instance, exact.clone()).await;
+                assert_eq!(
+                    filesystem.begins.load(std::sync::atomic::Ordering::Acquire),
+                    1,
+                    "the stage marked and staged through more than one operation"
+                );
+                let state = state::State::deserialize(exact.clone(), staged)
+                    .await
+                    .expect("Failed to deserialize the staged state");
+                let listing = staged_file_listing(exact, state).await;
+                assert!(
+                    listing.iter().any(|file| file.starts_with("added.txt ")),
+                    "the stage left out the file the exact diff finds: {listing:?}"
+                );
+            }))
+            .await
+            .expect("Test task failed");
+    }
+
+    /// A stage over an exact diff discards an add the working tree no longer holds, and with
+    /// nothing else staged leaves no staged state.
+    #[tokio::test]
+    async fn a_stage_over_an_exact_diff_discards_a_reverted_add() {
+        let (immutable_store, mutable_store, execution) =
+            test_store_create().await.expect("Failed to create stores");
+
+        runtime()
+            .spawn(LORE_CONTEXT.scope(execution, async move {
+                let (instance, exact, _, committed) =
+                    exact_fixture(immutable_store, mutable_store).await;
+                let added = instance.path.join("added.txt");
+                test_file_write(&added, b"added");
+                file::dirty::dirty(
+                    instance.repository.clone(),
+                    LoreArray::from_vec(vec![LoreString::from(&added)]),
+                )
+                .await
+                .expect("Dirty failed");
+                std::fs::remove_file(&added).expect("Remove failed");
+
+                let staged = stage_root(&instance, exact.clone()).await;
+                let (_, held, _) = state::State::deserialize_current_and_staged(exact)
+                    .await
+                    .expect("Failed to deserialize the states");
+                assert_eq!(staged, committed);
+                assert!(
+                    held.is_none(),
+                    "the staged state still holds the reverted add"
+                );
+            }))
+            .await
+            .expect("Test task failed");
+    }
+
+    /// A stage of several targets over an exact diff marks below each, the walks running side by
+    /// side, and discards what any of them finds stale once all have drained.
+    #[tokio::test]
+    async fn a_stage_of_several_targets_over_an_exact_diff_marks_below_each() {
+        let (immutable_store, mutable_store, execution) =
+            test_store_create().await.expect("Failed to create stores");
+
+        runtime()
+            .spawn(LORE_CONTEXT.scope(execution, async move {
+                let (instance, exact, _, _) = exact_fixture(immutable_store, mutable_store).await;
+                for directory in ["a", "b"] {
+                    let directory = instance.path.join(directory);
+                    std::fs::create_dir_all(&directory).expect("Create failed");
+                    test_file_write(&directory.join("seed.txt"), b"seed");
+                }
+                test_commit_tree(&instance, "Directories").await;
+                test_file_write(&instance.path.join("a/added.txt"), b"added");
+                test_file_write(&instance.path.join("b/added.txt"), b"added");
+                let gone = instance.path.join("b/gone.txt");
+                test_file_write(&gone, b"gone");
+                file::dirty::dirty(
+                    instance.repository.clone(),
+                    LoreArray::from_vec(vec![LoreString::from(&gone)]),
+                )
+                .await
+                .expect("Dirty failed");
+                std::fs::remove_file(&gone).expect("Remove failed");
+
+                let staged = file::stage::stage(
+                    exact.clone(),
+                    &instance.write_token,
+                    LoreArray::from_vec(vec![
+                        LoreString::from(&instance.path.join("a")),
+                        LoreString::from(&instance.path.join("b")),
+                    ]),
+                    StageOptions::default(),
+                )
+                .await
+                .expect("Stage failed");
+                let state = state::State::deserialize(exact.clone(), staged)
+                    .await
+                    .expect("Failed to deserialize the staged state");
+                let listing = staged_file_listing(exact, state).await;
+                for added in ["a/added.txt ", "b/added.txt "] {
+                    assert!(
+                        listing.iter().any(|file| file.starts_with(added)),
+                        "the stage left out {added}found below a target: {listing:?}"
+                    );
+                }
+                assert!(
+                    !listing.iter().any(|file| file.starts_with("b/gone.txt ")),
+                    "the staged state still holds the reverted add: {listing:?}"
+                );
+            }))
+            .await
+            .expect("Test task failed");
+    }
+
+    /// A stage over an exact diff marks the paths it is given in parallel, and the walk below an
+    /// untracked path creates the directory nodes the tree lacks above it. Many new files sharing
+    /// new directories must still leave each directory as one node, holding each file once.
+    #[tokio::test]
+    async fn a_stage_of_new_files_over_an_exact_diff_creates_each_shared_new_directory_once() {
+        const FILES: usize = 64;
+        let (immutable_store, mutable_store, execution) =
+            test_store_create().await.expect("Failed to create stores");
+
+        runtime()
+            .spawn(LORE_CONTEXT.scope(execution, async move {
+                let (instance, exact, _, _) = exact_fixture(immutable_store, mutable_store).await;
+                let mut paths = Vec::new();
+                for directory in ["fresh/one", "fresh/two"] {
+                    std::fs::create_dir_all(instance.path.join(directory))
+                        .expect("Create directory failed");
+                    for index in 0..FILES {
+                        let path = instance.path.join(format!("{directory}/{index:03}.txt"));
+                        test_file_write(&path, b"new");
+                        paths.push(LoreString::from(&path));
+                    }
+                }
+
+                let staged = file::stage::stage(
+                    exact.clone(),
+                    &instance.write_token,
+                    LoreArray::from_vec(paths),
+                    StageOptions::default(),
+                )
+                .await
+                .expect("Stage failed");
+                let staged = state::State::deserialize(exact.clone(), staged)
+                    .await
+                    .expect("Failed to deserialize the staged state");
+
+                let fresh = children_named(&exact, &staged, node::ROOT_NODE, "fresh").await;
+                assert_eq!(fresh.len(), 1, "one node for the shared directory");
+                for directory in ["one", "two"] {
+                    let nodes = children_named(&exact, &staged, fresh[0], directory).await;
+                    assert_eq!(nodes.len(), 1, "one node for fresh/{directory}");
+                    for index in 0..FILES {
+                        let name = format!("{index:03}.txt");
+                        let files = children_named(&exact, &staged, nodes[0], &name).await;
+                        assert_eq!(files.len(), 1, "one node for fresh/{directory}/{name}");
+                    }
+                }
+            }))
+            .await
+            .expect("Test task failed");
+    }
+
+    /// A layer drawn from a repository holding `kept.txt`, mounted at `mount` in a repository read
+    /// through a [`HoldingFilesystem`], whose working tree holds the layer's file, a new one beside
+    /// it and another in `mount/dir`: the layer's repository, the repository and the context over
+    /// it.
+    async fn exact_layer_fixture(
+        immutable_store: Arc<dyn lore_storage::immutable_store::ImmutableStore>,
+        mutable_store: Arc<dyn lore_storage::mutable_store::MutableStore>,
+    ) -> (TestRepository, TestRepository, Arc<RepositoryContext>) {
+        #[derive(serde::Serialize)]
+        struct LayerConfig {
+            layers: Vec<lore_revision::layer::Layer>,
+        }
+
+        let source = test_repository_create(
+            immutable_store.clone(),
+            mutable_store.clone(),
+            RepositoryId::from(uuid::Uuid::now_v7()),
+        )
+        .await;
+        test_file_write(&source.path.join("kept.txt"), b"kept");
+        let layer_revision = test_commit_tree(&source, "Layer").await.revision();
+        let (instance, exact, _, _) = exact_fixture(immutable_store, mutable_store).await;
+        lore_revision::util::config::save(
+            &LayerConfig {
+                layers: vec![lore_revision::layer::Layer {
+                    target_path: "mount".to_string(),
+                    source_path: String::new(),
+                    repository: source.repository.id,
+                    metadata: None,
+                    current: layer_revision,
+                    staged: Hash::default(),
+                }],
+            },
+            lore_revision::layer::layer_config_path(&exact).expect("Layer config path"),
+        )
+        .await
+        .expect("Failed to write the layer set");
+        std::fs::create_dir_all(instance.path.join("mount/dir")).expect("Create directory failed");
+        test_file_write(&instance.path.join("mount/kept.txt"), b"kept");
+        test_file_write(&instance.path.join("mount/new.txt"), b"new");
+        test_file_write(&instance.path.join("mount/dir/new.txt"), b"new");
+        (source, instance, exact)
+    }
+
+    /// A stage over an exact diff marks a layer's files in the layer's tree, as a status does, so
+    /// the layer stages its new file and the parent holds nothing of the mount.
+    #[tokio::test]
+    async fn a_stage_over_an_exact_diff_marks_layer_files_in_the_layer() {
+        let (immutable_store, mutable_store, execution) =
+            test_store_create().await.expect("Failed to create stores");
+
+        runtime()
+            .spawn(LORE_CONTEXT.scope(execution, async move {
+                let (source, instance, exact) =
+                    exact_layer_fixture(immutable_store, mutable_store).await;
+
+                let staged = stage_root(&instance, exact.clone()).await;
+
+                let parent = state::State::deserialize(exact.clone(), staged)
+                    .await
+                    .expect("Failed to deserialize the parent state");
+                let parent = staged_file_listing(exact.clone(), parent).await;
+                assert!(
+                    !parent.iter().any(|file| file.starts_with("mount/")),
+                    "the parent holds the mount's files: {parent:?}"
+                );
+                let layer = lore_revision::layer::list(exact)
+                    .await
+                    .expect("Failed to read the layer set")
+                    .pop()
+                    .expect("The fixture configures one layer");
+                assert!(!layer.staged.is_zero(), "the layer staged nothing");
+                let layer_state =
+                    state::State::deserialize(source.repository.clone(), layer.staged)
+                        .await
+                        .expect("Failed to deserialize the layer state");
+                let layer_files = staged_file_listing(source.repository.clone(), layer_state).await;
+                assert!(
+                    layer_files.iter().any(|file| file.starts_with("new.txt ")),
+                    "the layer left out its new file: {layer_files:?}"
+                );
+            }))
+            .await
+            .expect("Test task failed");
+    }
+
+    /// A status over an exact diff scoped to a layer mount, or to a directory below it, marks
+    /// nothing of the mount in the parent's tree, whether or not the scan was asked for: a scan
+    /// started there would mark the layer's files as parent adds.
+    #[tokio::test]
+    async fn a_status_of_a_layer_mount_over_an_exact_diff_marks_nothing_in_the_parent() {
+        let (immutable_store, mutable_store, execution) =
+            test_store_create().await.expect("Failed to create stores");
+
+        runtime()
+            .spawn(LORE_CONTEXT.scope(execution, async move {
+                let (_source, _instance, exact) =
+                    exact_layer_fixture(immutable_store, mutable_store).await;
+
+                for scan in [false, true] {
+                    for path in ["mount", "mount/dir"] {
+                        repository::status::status_boxed(
+                            exact.clone(),
+                            Some(vec![
+                                lore_revision::util::path::RelativePath::new_from_initial_path(
+                                    path,
+                                )
+                                .expect("A relative path"),
+                            ]),
+                            repository::status::StatusOptions {
+                                staged: true,
+                                scan,
+                                check_dirty: false,
+                                reset: false,
+                                sync_point: false,
+                                revision_only: false,
+                                count: false,
+                            },
+                        )
+                        .await
+                        .expect("Status failed");
+                    }
+                }
+
+                let (_, staged, _) = state::State::deserialize_current_and_staged(exact.clone())
+                    .await
+                    .expect("Failed to deserialize the states");
+                if let Some(staged) = staged {
+                    let mount = children_named(&exact, &staged, node::ROOT_NODE, "mount").await;
+                    assert!(mount.is_empty(), "the parent holds a node for the mount");
+                }
+            }))
+            .await
+            .expect("Test task failed");
     }
 
     /// Resolution collects targets in completion order, and only the antichain

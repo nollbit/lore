@@ -31,7 +31,6 @@ use crate::fs::filesystem_provider::InstanceOperation;
 use crate::fs::filesystem_provider::InstanceOperationImpl;
 use crate::fs::filesystem_provider::with_operation;
 use crate::hash;
-use crate::infer::infer_is_conflicted;
 use crate::interface::LoreArray;
 use crate::interface::LoreFileAction;
 use crate::interface::LoreString;
@@ -698,6 +697,16 @@ pub(crate) async fn stage_filesystem_path(
             return Ok(NodeLink::default());
         }
 
+        // Without its children a missing directory is only located: deleting it would delete
+        // everything below it, where the caller stages only some of that.
+        if options.no_children {
+            return Ok(if node_link.repository == repository.id {
+                node_link
+            } else {
+                NodeLink::default()
+            });
+        }
+
         let mut current_repository = repository.clone();
         let node_state = if node_link.repository != repository.id {
             current_repository = repository.to_link_context(node_link.repository).await;
@@ -1175,9 +1184,14 @@ pub(crate) async fn stage_merge_path(
         let mut merge_flags = NodeFlags::StagedMerge;
 
         if sync::exist_merge_artifacts(&operation, change.path()).await
-            || infer_is_conflicted(&operation.content_source(change.path()))
-                .await
-                .unwrap_or_default()
+            || (change.action != change::FileAction::Delete
+                && change.to.flags.contains(NodeFlags::File)
+                && operation
+                    .infer_is_conflicted(change.path())
+                    .await
+                    .forward_with::<StageError, _>(|| {
+                        format!("checking {} for conflict markers", change.path())
+                    })?)
         {
             lore_debug!(
                 "Merge change filesystem state is conflicted: {}",

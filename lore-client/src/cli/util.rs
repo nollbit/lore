@@ -151,6 +151,15 @@ pub fn convert_to_lore_string_vec(paths: &[String]) -> Vec<LoreString> {
     paths.iter().map(LoreString::from).collect()
 }
 
+pub fn split_path_messages(values: &[String]) -> (Vec<LoreString>, Vec<LoreString>) {
+    values
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|[path, message]| (LoreString::from(path), LoreString::from(message)))
+        .unzip()
+}
+
 pub fn convert_paths_and_targets(
     paths: &Option<Vec<String>>,
     targets: &Option<String>,
@@ -340,6 +349,11 @@ pub struct TerminationSignals {
     terminate: tokio::signal::unix::Signal,
     #[cfg(windows)]
     ctrl_c: tokio::signal::windows::CtrlC,
+    // What a process started in a group of its own can be sent: a console delivers
+    // Ctrl-C to a group only when it is the one the console runs, so Ctrl-Break is
+    // the signal a supervisor can use to ask such a process to stop.
+    #[cfg(windows)]
+    ctrl_break: tokio::signal::windows::CtrlBreak,
 }
 
 impl TerminationSignals {
@@ -359,6 +373,7 @@ impl TerminationSignals {
         {
             Ok(Self {
                 ctrl_c: tokio::signal::windows::ctrl_c()?,
+                ctrl_break: tokio::signal::windows::ctrl_break()?,
             })
         }
         // No signals to register, matching `remote::network::stub`, which reports
@@ -381,7 +396,10 @@ impl TerminationSignals {
 
         #[cfg(windows)]
         {
-            self.ctrl_c.recv().await;
+            tokio::select! {
+                _ = self.ctrl_c.recv() => {},
+                _ = self.ctrl_break.recv() => {},
+            }
             println!();
         }
 

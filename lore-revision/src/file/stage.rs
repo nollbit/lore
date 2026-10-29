@@ -3,7 +3,6 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use futures::FutureExt;
 use lore_base::lore_spawn;
 use lore_error_set::prelude::*;
 use tokio::task::JoinSet;
@@ -31,6 +30,7 @@ use crate::node::SiblingCycleGuard;
 use crate::path::emit_path_ignore;
 use crate::repository::RepositoryContext;
 use crate::repository::RepositoryWriteToken;
+use crate::repository::status;
 use crate::stage;
 use crate::stage::LoreFileStageBeginEventData;
 use crate::stage::LoreFileStageCountData;
@@ -62,11 +62,19 @@ struct TreeWalkPath {
     prefixes: Option<Arc<crate::util::fs::ResolvedPrefixes>>,
 }
 
+/// A shared ancestor once created: its node, and the path it was found at, which the walks below
+/// it start from rather than the spelling they were given.
+#[lore_macro::test_pub]
+struct CreatedAncestor {
+    node: crate::node::NodeID,
+    path: RelativePath,
+}
+
 /// Where the walk for a target starts. Neither answer is a failure: a target with no created
 /// ancestor is walked whole from the repository root.
 #[lore_macro::test_pub]
 enum WalkStart {
-    /// The deepest ancestor that already has a node, spelled as the case resolved it, and what is
+    /// The deepest ancestor that already has a node, at the path it was created at, and what is
     /// left of the target below it.
     BelowAncestor {
         path: RelativePath,
@@ -89,29 +97,13 @@ enum WalkStart {
 #[lore_macro::test_pub]
 fn walk_start(
     mut target: RelativePath,
-    ancestor_nodes: &AncestorNodes<'_>,
-    prefixes: Option<&Arc<crate::util::fs::ResolvedPrefixes>>,
+    ancestor_nodes: &AncestorNodes<'_, CreatedAncestor>,
 ) -> WalkStart {
-    let (path, node, prefix_depth) = {
-        let Some((prefix, node)) = longest_ancestor(target.as_str(), ancestor_nodes) else {
-            return WalkStart::FromRoot(target);
-        };
-        let prefix_depth = path_depth(prefix);
-        // The case the prefix resolved to, and only when it resolved as a whole:
-        // a shorter match answers for a shorter path and would drop components.
-        let variation = prefixes
-            .and_then(|resolved| resolved.longest_prefix_of(prefix))
-            .filter(|(depth, _)| *depth == prefix_depth)
-            .map_or(prefix, |(_, variation)| variation);
-        // Already clean: a map value built from cleaned parts, so it needs no
-        // validating or rewriting.
-        (
-            RelativePath::new_from_clean_parts(variation, ""),
-            node,
-            prefix_depth,
-        )
+    let Some((prefix, created)) = longest_ancestor(target.as_str(), ancestor_nodes) else {
+        return WalkStart::FromRoot(target);
     };
-    target.pop_root_repeat(prefix_depth);
+    let (path, node) = (created.path.clone(), created.node);
+    target.pop_root_repeat(path_depth(prefix));
     WalkStart::BelowAncestor {
         path,
         node,
@@ -209,8 +201,12 @@ impl StageWalk {
 
     /// Where a walk of `target` starts, and what it covers below that point, mapped into the
     /// trees this walk writes.
-    fn walk(&self, target: RelativePath, ancestors: &AncestorNodes<'_>) -> TreeWalkPath {
-        match walk_start(target, ancestors, self.prefixes.as_ref()) {
+    fn walk(
+        &self,
+        target: RelativePath,
+        ancestors: &AncestorNodes<'_, CreatedAncestor>,
+    ) -> TreeWalkPath {
+        match walk_start(target, ancestors) {
             WalkStart::BelowAncestor {
                 path,
                 node,
@@ -263,14 +259,17 @@ async fn precreate_shared_ancestors<'a>(
     walk: &StageWalk,
     shared_ancestors: &'a [DepthPath],
     discards: &Arc<stage::DiscardQueue>,
-) -> Result<AncestorNodes<'a>, StageError> {
+) -> Result<AncestorNodes<'a, CreatedAncestor>, StageError> {
     let mut options = walk.options;
     options.no_children = true;
     fan_out::create_shared_ancestors(
         shared_ancestors,
         |ancestor, nodes| {
-            let walk_path = walk.walk(RelativePath::new_from_clean_parts(ancestor, ""), nodes);
-            stage::stage_filesystem_path(
+            let given = RelativePath::new_from_clean_parts(ancestor, "");
+            let resolved = resolved_or_given(&given, walk.prefixes.as_deref());
+            let walk_path = walk.walk(given, nodes);
+            let start = walk_path.at.clone();
+            let staged = stage::stage_filesystem_path(
                 walk.operation.clone(),
                 walk_path.at,
                 walk_path.remainder,
@@ -280,12 +279,66 @@ async fn precreate_shared_ancestors<'a>(
                 walk.global_mask.clone(),
                 walk_path.prefixes,
                 Some(discards.clone()),
-            )
-            .map(|staged| staged.map(|link| link.is_valid().then_some(link.node)))
+            );
+            async move {
+                let link = staged.await?;
+                if !link.is_valid() {
+                    return Ok(None);
+                }
+                let path = created_path(&start, &link).await?.unwrap_or(resolved);
+                Ok(Some(CreatedAncestor {
+                    node: link.node,
+                    path,
+                }))
+            }
         },
         |err| StageError::internal_with_context(err, "Failed to join pre-create task"),
     )
     .await
+}
+
+/// `given` in the case `prefixes` resolved it to, where it resolved as a whole: a shorter match
+/// answers for a shorter path and would drop components.
+#[lore_macro::test_pub]
+fn resolved_or_given(
+    given: &RelativePath,
+    prefixes: Option<&crate::util::fs::ResolvedPrefixes>,
+) -> RelativePath {
+    prefixes
+        .and_then(|resolved| resolved.longest_prefix_of(given.as_str()))
+        .filter(|(depth, _)| *depth == path_depth(given.as_str()))
+        .map_or_else(
+            || given.clone(),
+            |(_, variation)| RelativePath::new_from_clean_parts(variation, ""),
+        )
+}
+
+/// The path `created` stands at, spelled by the tree below `start`, the point its walk started
+/// from.
+///
+/// Staging the ancestor made the tree and the file system agree on that spelling: `Keep` renames
+/// the file system to the tree, `Rename` the tree to the file system. `None` where the walk crossed
+/// into a linked repository, whose nodes `start`'s state does not hold, which leaves the caller
+/// the spelling it resolved before staging.
+async fn created_path(
+    start: &NodeMapping,
+    created: &crate::node::NodeLink,
+) -> Result<Option<RelativePath>, StageError> {
+    if created.repository != start.repository.id {
+        return Ok(None);
+    }
+    let below = start
+        .state
+        .node_path_below(start.repository.clone(), created.node, start.node)
+        .await
+        .forward::<StageError>("Failed to resolve the path of a shared ancestor")?;
+    Ok(below.map(|below| {
+        if start.path.is_empty() {
+            below
+        } else {
+            RelativePath::new_from_clean_parts(start.path.as_str(), below.as_str())
+        }
+    }))
 }
 
 /// Spawn a walk per target into `tasks`.
@@ -297,7 +350,7 @@ async fn precreate_shared_ancestors<'a>(
 async fn spawn_target_walks(
     walk: &StageWalk,
     antichain: Vec<RelativePath>,
-    ancestors: &AncestorNodes<'_>,
+    ancestors: &AncestorNodes<'_, CreatedAncestor>,
     discards: &Arc<stage::DiscardQueue>,
     tasks: &mut JoinSet<Result<crate::node::NodeLink, StageError>>,
 ) -> Option<StageError> {
@@ -416,6 +469,58 @@ async fn normalize_stage_path(
     Some(relative_path)
 }
 
+/// Marks in `state`, the tree a stage resolves its targets against, what the provider's diff
+/// finds below each of `paths`, through a `status` scan that reports nothing
+/// ([`status::scan_paths`]), and answers whether it discarded an entry it found stale, which
+/// changes `state` with no target left to stage. A path that names nothing in the repository is
+/// left to the resolution, which reports it, and a path inside a layer mount to what the layer's
+/// tree holds marked.
+#[lore_macro::test_pub]
+async fn mark_through_provider_diff(
+    operation: &Arc<InstanceOperationImpl>,
+    repository: &Arc<RepositoryContext>,
+    state_current: &Arc<State>,
+    state: &Arc<State>,
+    layers: &[(layer::Layer, layer::LayerState)],
+    layer_target_refs: &[&str],
+    paths: &LoreArray<LoreString>,
+) -> Result<bool, StageError> {
+    let root = repository.require_path()?;
+    let named: Vec<RelativePath> = paths
+        .as_slice()
+        .iter()
+        .filter_map(|path| RelativePath::new_from_user_path(root, path.as_str()).ok())
+        .filter(|path| {
+            !matches!(
+                classify_stage_path(path.as_str(), layer_target_refs),
+                LayerRoute::Inside { .. }
+            )
+        })
+        .collect();
+    if named.is_empty() {
+        return Ok(false);
+    }
+    let targets: Vec<Option<RelativePath>> = if named.iter().any(RelativePath::is_empty) {
+        vec![None]
+    } else {
+        RelativePath::dedup_to_supersets(named)
+            .into_iter()
+            .map(Some)
+            .collect()
+    };
+    status::scan_paths(
+        operation.clone(),
+        repository,
+        &targets,
+        state_current,
+        state,
+        &layer::mounts(layers).await,
+        None,
+    )
+    .await
+    .forward::<StageError>("marking what the provider's diff finds")
+}
+
 /// Stage `paths` into the staged revision and return its hash.
 ///
 /// Each entry in `paths` is classified as either an individual file path or
@@ -427,7 +532,9 @@ async fn normalize_stage_path(
 /// - **Directory paths** by default stage only the files and child
 ///   directories currently marked dirty in the repository state — this is
 ///   the fast path and relies on prior notifications or `status --scan`
-///   calls to keep dirty flags accurate. When [`StageOptions::scan`] is
+///   calls to keep dirty flags accurate. Over a provider that holds its state
+///   in a `State`, whose diff is exact, the stage first marks them through
+///   that diff, so nothing prior is needed. When [`StageOptions::scan`] is
 ///   `true`, the directory is walked recursively on the filesystem, every
 ///   contained file is reconciled, and the dirty flags are disregarded.
 pub async fn stage(
@@ -483,34 +590,44 @@ pub async fn stage(
         .map(|paths| paths.iter().map(String::as_str).collect())
         .unwrap_or_default();
 
-    let RoutedTargets {
-        current_repository_paths,
-        layer_paths,
-    } = route_and_resolve_targets(&repository, &state, &paths, &layer_target_refs, options).await?;
-
-    // A root target covers the whole tree; otherwise collapse overlaps so a
-    // parent target subsumes anything that would be staged beneath it.
-    let stage_root = current_repository_paths.iter().any(|p| p.is_empty());
-    let antichain: Vec<RelativePath> = if stage_root {
-        vec![RelativePath::new()]
-    } else {
-        RelativePath::dedup_to_supersets(current_repository_paths)
-    };
-    let antichain_len = antichain.len();
-
-    let shared_ancestors = fan_out::shared_ancestors(&antichain);
-    let precreate_count = shared_ancestors.len();
-
-    let main_count = antichain_len + precreate_count;
-    // A layer may be targeted by several paths; serialize each only once.
-    let staged_layers: std::collections::BTreeSet<usize> = layer_paths
-        .iter()
-        .map(|(layer_index, _)| *layer_index)
-        .collect();
-
     // One filesystem operation covers the whole stage: a layer or link at a subpath
     // is a subtree of the same filesystem and takes the operation its parent holds.
-    with_operation(repository.file_system(), async |operation| {
+    let walked = with_operation(repository.file_system(), async |operation| {
+        let diff_discarded = operation.holds_state()
+            && !options.scan
+            && mark_through_provider_diff(
+                &operation,
+                &repository,
+                &state_current,
+                &state,
+                &layers,
+                &layer_target_refs,
+                &paths,
+            )
+            .await?;
+
+        let RoutedTargets {
+            current_repository_paths,
+            layer_paths,
+        } = route_and_resolve_targets(&repository, &state, &paths, &layer_target_refs, options)
+            .await?;
+
+        // A root target covers the whole tree; otherwise collapse overlaps so a
+        // parent target subsumes anything that would be staged beneath it.
+        let stage_root = current_repository_paths.iter().any(|p| p.is_empty());
+        let antichain: Vec<RelativePath> = if stage_root {
+            vec![RelativePath::new()]
+        } else {
+            RelativePath::dedup_to_supersets(current_repository_paths)
+        };
+        let shared_ancestors = fan_out::shared_ancestors(&antichain);
+        let main_count = antichain.len() + shared_ancestors.len();
+        // A layer may be targeted by several paths; serialize each only once.
+        let staged_layers: std::collections::BTreeSet<usize> = layer_paths
+            .iter()
+            .map(|(layer_index, _)| *layer_index)
+            .collect();
+
         let walk = StageWalk {
             prefixes: resolve_shared_prefixes(&operation, &repository, &shared_ancestors, options)
                 .await?,
@@ -533,13 +650,14 @@ pub async fn stage(
         }
         match drain_walks(&mut tasks, &stats, &mut ticker, failure).await {
             Some(err) => Err(err),
-            None => Ok::<(), StageError>(()),
+            None => Ok::<_, StageError>((diff_discarded, main_count, staged_layers)),
         }
     })
     .await?;
+    let (diff_discarded, main_count, staged_layers) = walked;
 
     let queued = discards.take();
-    let discarded = !queued.is_empty();
+    let discarded = !queued.is_empty() || diff_discarded;
     state::apply_pending_discards(state.clone(), repository.clone(), queued)
         .await
         .forward::<StageError>("Failed to discard entries no commit holds")?;
@@ -567,7 +685,8 @@ pub async fn stage(
     // bump the staged anchor because the resulting hash would diverge from
     // current_revision purely from set_revision_number/set_parent_self
     // metadata writes, tricking commit into trying to commit an empty parent.
-    let parent_mutated = main_count > 0 && (state.is_dirty() || link_tracker.has_modifications());
+    let parent_mutated = (main_count > 0 || diff_discarded)
+        && (state.is_dirty() || link_tracker.has_modifications());
     if discarded && leaves_nothing_staged(&repository, &state, &link_tracker).await? {
         // A discard can leave nothing staged or dirty, which an unstage leaves with no staged
         // state at all.
@@ -588,17 +707,7 @@ pub async fn stage(
         )
         .await?;
 
-        // Staged states should have no revision number
-        state.set_revision_number(0);
-
-        state.set_parent_self(current_revision);
-
-        // If staged state is the initial stage based on current state, reset other parent. Otherwise
-        // leave it as is, in case previous staged state was a merge/integrate
-        if staged_revision == current_revision {
-            state.set_parent_other(Hash::default());
-            state.set_metadata_hash(Hash::default());
-        }
+        state.reparent_onto(current_revision);
 
         let signature = state
             .serialize(repository.clone(), token)
@@ -635,16 +744,7 @@ pub async fn stage(
             continue;
         }
 
-        state.set_revision_number(0);
-
-        state.set_parent_self(layer_state.state_current.revision());
-
-        // If staged state is the initial stage based on current state, reset other parent. Otherwise
-        // leave it as is, in case previous staged state was a merge/integrate
-        if layer_state.state_current.revision() == layer_state.state_staged.revision() {
-            state.set_parent_other(Hash::default());
-            state.set_metadata_hash(Hash::default());
-        }
+        state.reparent_onto(layer_state.state_current.revision());
 
         let signature = state
             .serialize(layer_state.repository.clone(), token)
@@ -1419,14 +1519,7 @@ pub async fn stage_move(
     let count = LoreFileStageCountData::new(stats.clone());
     event::LoreEvent::FileStageEnd(LoreFileStageEndEventData { count }).send();
 
-    state.set_parent_self(current_revision);
-
-    // If staged state is the initial stage based on current state, reset other parent. Otherwise
-    // leave it as is, in case previous staged state was a merge/integrate
-    if state.revision() == current_revision {
-        state.set_parent_other(Hash::default());
-        state.set_metadata_hash(Hash::default());
-    }
+    state.reparent_onto(current_revision);
 
     // Serialize new staged state
     let signature = state

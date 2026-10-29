@@ -10,6 +10,7 @@ use lore_error_set::prelude::*;
 use lore_macro::LoreArgs;
 use lore_macro::ValidateText;
 use lore_revision::global::GlobalConfig;
+use lore_revision::interface::ExecutionContext;
 use lore_revision::interface::LoreArray;
 use lore_revision::interface::LoreEventCallback;
 use lore_revision::interface::LoreGlobalArgs;
@@ -117,6 +118,12 @@ pub struct LoreRepositoryCloneArgs {
 
 /// Clones a remote repository to the local path specified in the global arguments.
 ///
+/// A clone needs the remote, so the offline flag does not keep it from connecting: it prepares the
+/// clone for working offline instead. With it, as with the cache flag, a clone that writes its
+/// files caches every file metadata block of the cloned revision, which staging and committing
+/// write to, so both work without the remote, and fails if it cannot. A bare clone writes no files
+/// and reads them from the remote when a command needs them.
+///
 /// # Events
 ///
 /// ## Standard Events
@@ -136,7 +143,7 @@ pub struct LoreRepositoryCloneArgs {
 /// |-------|-------------|
 /// | [`LoreEvent::RepositoryCloneBegin`](crate::interface::LoreEvent::RepositoryCloneBegin) | Emitted when clone begins, includes remote URL and target path |
 /// | [`LoreEvent::RepositoryCloneProgress`](crate::interface::LoreEvent::RepositoryCloneProgress) | Emitted periodically during clone with progress data, and at completion with final totals |
-/// | [`LoreEvent::RepositoryCloneEnd`](crate::interface::LoreEvent::RepositoryCloneEnd) | Emitted when clone completes successfully |
+/// | [`LoreEvent::RepositoryCloneEnd`](crate::interface::LoreEvent::RepositoryCloneEnd) | Emitted only when the clone succeeds; [`LoreEvent::Complete`](crate::interface::LoreEvent::Complete) reports the outcome of every clone |
 /// | [`LoreEvent::RevisionSyncTarget`](crate::interface::LoreEvent::RevisionSyncTarget) | Emitted after resolving the target revision to sync during clone |
 /// | [`LoreEvent::RevisionSyncRevision`](crate::interface::LoreEvent::RevisionSyncRevision) | Emitted with the resulting revision |
 /// | [`LoreEvent::RevisionSyncProgress`](crate::interface::LoreEvent::RevisionSyncProgress) | Emitted periodically during initial file sync |
@@ -156,7 +163,7 @@ async fn clone_local(
     args: LoreRepositoryCloneArgs,
     callback: LoreEventCallback,
 ) -> i32 {
-    let execution = setup_execution(globals, callback);
+    let (execution, prepare_offline) = clone_execution(globals, callback);
 
     LORE_CONTEXT
         .scope(execution, async move {
@@ -164,7 +171,12 @@ async fn clone_local(
 
             let time_start = Instant::now();
 
-            let result = clone_impl(execution_context().globals().repository_path(), &args).await;
+            let result = clone_impl(
+                execution_context().globals().repository_path(),
+                &args,
+                prepare_offline,
+            )
+            .await;
 
             log_command_done(&clone, time_start);
             execution_context().dispatcher.complete_result(result).await
@@ -172,9 +184,26 @@ async fn clone_local(
         .await
 }
 
+/// The execution a clone runs in, with the offline flag cleared since a clone needs the remote,
+/// and whether the flag was set, asking the clone to prepare the repository for working offline.
+///
+/// A function of its own so that `clone_local` moves its globals whole: written in place, they
+/// would take space in its future beside the scope it awaits.
+fn clone_execution(
+    mut globals: LoreGlobalArgs,
+    callback: LoreEventCallback,
+) -> (Arc<ExecutionContext>, bool) {
+    let prepare_offline = globals.offline();
+    globals.offline = 0;
+    (setup_execution(globals, callback), prepare_offline)
+}
+
+/// Clones as [`clone`] describes, preparing the repository for working offline where
+/// `prepare_offline` is set.
 async fn clone_impl(
     repository_path: &str,
     args: &LoreRepositoryCloneArgs,
+    prepare_offline: bool,
 ) -> Result<(), CloneError> {
     let remote_url = args.repository_url.as_str();
     let clone_path = util::path::make_absolute(repository_path)
@@ -230,6 +259,7 @@ async fn clone_impl(
         dependency_tags,
         dependency_recursive: args.dependency_recursive != 0,
         dependency_depth_limit: args.dependency_depth_limit,
+        cache_file_metadata: prepare_offline || execution_context().globals().cache(),
     };
 
     let layer = if !args.layer.is_empty() {
@@ -637,10 +667,10 @@ pub struct LoreRepositoryReleaseArgs {}
 
 /// Release all cached store references for the given repository path.
 ///
-/// Frees in-memory store data and releases file-backed store cache entries.
-/// Any active `RepositoryContext` instances for this path remain valid, but
-/// once they are dropped the stores will be freed. Subsequent opens will
-/// create fresh stores.
+/// Frees cached in-memory store data. Disk-backed stores are not forced closed:
+/// each is released once nothing uses it, and a later open reuses one that is still
+/// alive, which the store epoch keeps current with what other processes wrote.
+/// Any active `RepositoryContext` instances for this path remain valid.
 ///
 /// # Events
 ///
@@ -1026,9 +1056,13 @@ pub async fn verify_state(
 
 async fn verify_state_local(
     globals: LoreGlobalArgs,
-    args: LoreRepositoryVerifyStateArgs,
+    mut args: LoreRepositoryVerifyStateArgs,
     callback: LoreEventCallback,
 ) -> i32 {
+    // A dry run reports what healing would repair, healing nothing.
+    if globals.dry_run() {
+        args.heal = 0;
+    }
     if args.heal != 0 {
         repository_call_write(
             globals,
@@ -1081,9 +1115,13 @@ pub async fn verify_fragment(
 
 fn verify_fragment_local(
     globals: LoreGlobalArgs,
-    args: LoreRepositoryVerifyFragmentArgs,
+    mut args: LoreRepositoryVerifyFragmentArgs,
     callback: LoreEventCallback,
 ) -> impl Future<Output = i32> {
+    // A dry run reports what healing would repair, healing nothing.
+    if globals.dry_run() {
+        args.heal = 0;
+    }
     repository_call_read(
         globals,
         callback,

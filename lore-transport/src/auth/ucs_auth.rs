@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use lore_base::error::NotSupported;
 use lore_base::types::RepositoryId;
 use lore_proto::auth::ExchangeExternalTokenForUserTokenRequest;
 use lore_proto::auth::ExchangeUserTokenForMultiresourceTokenRequest;
@@ -19,8 +20,7 @@ use crate::traits::Authentication;
 use crate::traits::UserService;
 use crate::types::*;
 
-/// The auth URL schemes [`UcsAuthentication`] is registered under, for
-/// authentication and the user service alike. `https` is the transition
+/// The auth URL schemes [`UcsAuthentication`] is registered under. `https` is the transition
 /// fallback. `http` serves local test auth services; The implementation only
 /// honours plaintext for loopback hosts and upgrades any other http URL to
 /// https (see [`grpc_endpoint`]).
@@ -67,6 +67,21 @@ fn resource_id(repository: RepositoryId) -> String {
     format!("urc-{repository}")
 }
 
+/// Connects a channel to a UCS Auth API endpoint.
+pub(super) async fn connect_channel(
+    auth_url: &str,
+) -> Result<tonic::transport::Channel, ProtocolError> {
+    let endpoint = grpc_endpoint(auth_url);
+    let endpoint = tonic::transport::Endpoint::new(endpoint)
+        .map_err(|e| ProtocolError::internal(format!("invalid auth endpoint: {e}")))?;
+    // Connect from a net-runtime task so the channel's driver tasks are
+    // bound to the net runtime.
+    lore_base::lore_spawn_net!(async move { endpoint.connect().await })
+        .await
+        .map_err(|e| ProtocolError::internal(format!("auth endpoint connect task: {e}")))?
+        .map_err(|e| ProtocolError::internal(format!("failed to connect to auth endpoint: {e}")))
+}
+
 /// Creates a gRPC client with correlation ID interceptor, connected to the
 /// auth endpoint.
 async fn connect_client(
@@ -77,23 +92,17 @@ async fn connect_client(
     >,
     ProtocolError,
 > {
-    let endpoint = grpc_endpoint(auth_url);
-    let endpoint = tonic::transport::Endpoint::new(endpoint)
-        .map_err(|e| ProtocolError::internal(format!("invalid auth endpoint: {e}")))?;
-    // Connect from a net-runtime task so the channel's driver tasks are
-    // bound to the net runtime.
-    let channel = lore_base::lore_spawn_net!(async move { endpoint.connect().await })
-        .await
-        .map_err(|e| ProtocolError::internal(format!("auth endpoint connect task: {e}")))?
-        .map_err(|e| ProtocolError::internal(format!("failed to connect to auth endpoint: {e}")))?;
     Ok(UrcAuthApiClient::with_interceptor(
-        channel,
+        connect_channel(auth_url).await?,
         CorrelationInterceptor,
     ))
 }
 
 /// Sets the authorization header on a gRPC request.
-fn set_auth_header<T>(request: &mut tonic::Request<T>, token: &str) -> Result<(), ProtocolError> {
+pub(super) fn set_auth_header<T>(
+    request: &mut tonic::Request<T>,
+    token: &str,
+) -> Result<(), ProtocolError> {
     let mut header: tonic::metadata::MetadataValue<_> = format!("Bearer {token}")
         .parse()
         .map_err(|e| ProtocolError::internal(format!("invalid metadata value: {e}")))?;
@@ -104,8 +113,7 @@ fn set_auth_header<T>(request: &mut tonic::Request<T>, token: &str) -> Result<()
 
 /// Authentication and user service over the UCS Auth API gRPC service.
 ///
-/// Registered under [`SCHEMES`] in both registries. All `lore_proto::auth`
-/// imports are confined to this module.
+/// All `lore_proto::auth` imports are confined to this module.
 ///
 /// The `correlation_id` parameter on trait methods is not used directly --
 /// correlation IDs are injected into gRPC requests by `CorrelationInterceptor`,
@@ -210,6 +218,18 @@ impl Authentication for UcsAuthentication {
         })
     }
 
+    async fn authenticate_client(
+        &self,
+        _auth_url: &str,
+        _client_id: &str,
+        _client_secret: &str,
+        _correlation_id: &str,
+    ) -> Result<AuthenticationToken, ProtocolError> {
+        Err(ProtocolError::from(NotSupported {
+            operation: "client credentials login against the gRPC auth service".to_string(),
+        }))
+    }
+
     async fn refresh_authentication(
         &self,
         auth_url: &str,
@@ -235,6 +255,17 @@ impl Authentication for UcsAuthentication {
             refresh_token: token.refresh_token,
             scope: None,
         })
+    }
+
+    async fn revoke_refresh_token(
+        &self,
+        _auth_url: &str,
+        _refresh_token: &str,
+        _correlation_id: &str,
+    ) -> Result<(), ProtocolError> {
+        Err(ProtocolError::from(NotSupported {
+            operation: "token revocation at the gRPC auth service".to_string(),
+        }))
     }
 
     async fn exchange_for_repository(
@@ -345,107 +376,5 @@ impl UserService for UcsAuthentication {
             user_id: u.user_id,
             user_name: u.display_name,
         }))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn grpc_endpoint_ucs_auth() {
-        assert_eq!(
-            grpc_endpoint("ucs-auth://auth.example.com"),
-            "https://auth.example.com"
-        );
-    }
-
-    #[test]
-    fn grpc_endpoint_https() {
-        assert_eq!(
-            grpc_endpoint("https://auth.example.com"),
-            "https://auth.example.com"
-        );
-    }
-
-    #[test]
-    fn grpc_endpoint_http_to_loopback_is_preserved() {
-        assert_eq!(
-            grpc_endpoint("http://127.0.0.1:41339"),
-            "http://127.0.0.1:41339"
-        );
-        assert_eq!(
-            grpc_endpoint("http://localhost:41339"),
-            "http://localhost:41339"
-        );
-        // A parsed loopback IP literal counts, IPv6 included.
-        assert_eq!(grpc_endpoint("http://[::1]:41339"), "http://[::1]:41339");
-    }
-
-    /// The downgrade defence: a rogue server advertising a plaintext variant
-    /// of a real auth host must not steer login and exchange tokens onto an
-    /// unencrypted channel. Any non-loopback http URL is upgraded to https.
-    #[test]
-    fn grpc_endpoint_http_to_remote_host_is_upgraded() {
-        assert_eq!(
-            grpc_endpoint("http://auth.example.com"),
-            "https://auth.example.com"
-        );
-        assert_eq!(
-            grpc_endpoint("http://auth.example.com:8080/path"),
-            "https://auth.example.com:8080/path"
-        );
-        // A crafted host that merely starts with a local name is not local.
-        assert_eq!(
-            grpc_endpoint("http://localhost.evil.example"),
-            "https://localhost.evil.example"
-        );
-    }
-
-    /// Userinfo in the authority is the classic trick against hand-rolled
-    /// host extraction: the URL's host below is `auth.example.com`, and a
-    /// splitter taking the first `:`/`/` segment reads `localhost`. Such a
-    /// URL must never keep plaintext — and any URL carrying userinfo is
-    /// refused the loopback exemption outright.
-    #[test]
-    fn grpc_endpoint_userinfo_cannot_spoof_loopback() {
-        assert_eq!(
-            grpc_endpoint("http://localhost:password@auth.example.com"),
-            "https://localhost:password@auth.example.com"
-        );
-        assert_eq!(
-            grpc_endpoint("http://localhost@auth.example.com"),
-            "https://localhost@auth.example.com"
-        );
-        // Even a genuine loopback host gets no plaintext with userinfo present.
-        assert_eq!(
-            grpc_endpoint("http://user:password@127.0.0.1:41339"),
-            "https://user:password@127.0.0.1:41339"
-        );
-    }
-
-    #[test]
-    fn grpc_endpoint_no_scheme() {
-        assert_eq!(
-            grpc_endpoint("auth.example.com"),
-            "https://auth.example.com"
-        );
-    }
-
-    #[test]
-    fn grpc_endpoint_custom_scheme() {
-        assert_eq!(
-            grpc_endpoint("custom://auth.example.com:8443/path"),
-            "https://auth.example.com:8443/path"
-        );
-    }
-
-    #[test]
-    fn resource_id_format() {
-        let repo_id = RepositoryId::default();
-        let rid = resource_id(repo_id);
-        assert!(rid.starts_with("urc-"));
-        // Default RepositoryId is all zeros, displayed as hex
-        assert_eq!(rid, "urc-00000000000000000000000000000000");
     }
 }

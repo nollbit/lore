@@ -98,6 +98,7 @@ use crate::event::revision_tree::LoreRevisionTreeMoveCompleteEventData;
 use crate::event::revision_tree::LoreRevisionTreeNodeInfoEventData;
 use crate::event::revision_tree::LoreRevisionTreeNodePathEventData;
 use crate::event::revision_tree::LoreRevisionTreeResolvePathCompleteEventData;
+use crate::file::audit::LoreFileAuditEventData;
 use crate::file::diff::LoreFileDiffEventData;
 use crate::file::dump::LoreFileDumpEventData;
 use crate::file::hash::LoreFileHashEventData;
@@ -402,9 +403,10 @@ impl serde::Serialize for LoreBytes {
 /// A null pointer or zero length means no buffer is supplied, which is what a zero-initialized
 /// value says, as does a length no allocation can have.
 ///
-/// The memory must stay valid, and reach nobody else, for the duration of the call it is passed to.
-/// The buffers supplied by the items of one call must not overlap: the items run alongside each
-/// other, so two covering the same byte would write it at once.
+/// The memory must stay valid, and reach nobody else, until the call it is passed to completes: a
+/// synchronous call returns, and an asynchronous one delivers `END`. The buffers supplied by the
+/// items of one call must not overlap: the items run alongside each other, so two covering the same
+/// byte would write it at once.
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct LoreBytesMut {
@@ -1110,7 +1112,8 @@ pub enum LoreEvent {
     RepositoryCloneBegin(LoreRepositoryCloneBeginEventData),
     /// Progress during a repository clone.
     RepositoryCloneProgress(LoreRepositoryCloneProgressEventData),
-    /// The end of a repository clone.
+    /// The end of a repository clone that succeeded. A clone that fails sends none, and reports its
+    /// outcome on the complete event as every clone does.
     RepositoryCloneEnd(LoreRepositoryCloneEndEventData),
     /// The start of resolving dependencies.
     DependencyResolveBegin(LoreDependencyResolveBeginEventData),
@@ -1317,6 +1320,8 @@ pub enum LoreEvent {
     AuthPending(LoreAuthPendingEventData),
     /// One leaf fragment and its payload for a get-resolved item.
     StorageGetFragment(LoreStorageGetFragmentEventData),
+    /// One range of a file's lines, attributed to the revision that last changed them.
+    FileAudit(LoreFileAuditEventData),
 }
 
 /// Encodes as the event it refers to, so that a sender can encode an event it only borrows.

@@ -17,8 +17,8 @@ use lore_revision::util::path::RelativePath;
 
 use crate::fs::filesystem_provider::TestFilesystemProvider;
 use crate::fs::filesystem_provider::test_store_create;
-use crate::repository::test_helpers::RepositoryContextCreationArgsExt;
-use crate::repository::test_helpers::default_repository_creation_args;
+use crate::helper::RepositoryContextCreationArgsExt;
+use crate::helper::default_repository_creation_args;
 
 /// Runs `plan` over a repository whose states are empty and whose working tree holds what they
 /// do, and answers how many operations it began and what each finalize reported.
@@ -54,6 +54,36 @@ async fn operations_begun(plan: TreeDiffPlan) -> (usize, Vec<bool>) {
 
     let finalizes = filesystem.finalize_events.lock().clone();
     (filesystem.begins(), finalizes)
+}
+
+/// Status options asking for the staged comparison, scanning and checking dirty flags as given.
+fn options(scan: bool, check_dirty: bool) -> StatusOptions {
+    StatusOptions {
+        staged: true,
+        scan,
+        check_dirty,
+        reset: false,
+        sync_point: false,
+        revision_only: false,
+        count: false,
+    }
+}
+
+/// A provider whose diff is exact is scanned without `--scan`, with no dirty flag to check, and
+/// any other provider is scanned only when asked.
+#[test]
+fn an_exact_provider_diff_plans_a_scan_without_the_flag() {
+    let exact = TreeDiffPlan::for_status(&options(false, true), true, true);
+    assert!(exact.scan, "an exact diff is scanned unasked");
+    assert!(!exact.check_dirty, "an exact diff leaves no flag to check");
+    assert!(exact.compare_staged);
+
+    let unasked = TreeDiffPlan::for_status(&options(false, true), true, false);
+    assert!(
+        !unasked.scan,
+        "a provider whose diff is not exact is scanned only when asked"
+    );
+    assert!(unasked.check_dirty);
 }
 
 #[tokio::test]

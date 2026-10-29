@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use lore_revision::lore::RepositoryId;
 use lore_server::auth::jwt::AuthorizationToken;
+use lore_server::authnz::repository_authorizer::Action;
 use lore_server::authnz::repository_authorizer::AllowAllRepositoryAuthorizer;
 use lore_server::authnz::repository_authorizer::RawToken;
 use lore_server::authnz::repository_authorizer::RepositoryAuthorizer;
@@ -169,7 +170,6 @@ mod authorized_connect {
     use lore_server::auth::jwk::JWKService;
     use lore_server::auth::jwk::JWKServiceError;
     use lore_server::auth::jwt::AuthorizationToken;
-    use lore_server::auth::jwt::DEFAULT_IDENTITY_CLAIM;
     use lore_server::auth::jwt::JwtVerifier;
     use lore_server::auth::jwt::ResourcePermission;
     use lore_server::authnz::repository_authorizer::AuthClientAuthorizer;
@@ -213,7 +213,6 @@ mod authorized_connect {
             jwt_issuer: None,
             jwt_audience: Some(vec![TEST_AUDIENCE.to_string()]),
             jwt_typ: None,
-            identity_claim: DEFAULT_IDENTITY_CLAIM.to_string(),
         }))
     }
 
@@ -272,8 +271,8 @@ mod authorized_connect {
             .get::<PartitionGrants>()
             .expect("enumerated grants must be exposed");
         assert_eq!(grants.repository_id, repository);
-        assert!(grants.grants.permits("migrate"));
-        assert!(!grants.grants.permits("obliterate"));
+        assert!(grants.grants.permits(Action::Migrate));
+        assert!(!grants.grants.permits(Action::Obliterate));
         assert_eq!(context.get::<RawToken>().unwrap().0, token);
         assert!(context.get::<AuthorizationToken>().is_some());
     }

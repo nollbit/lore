@@ -305,9 +305,11 @@ Removing a guard requires changing the server configuration and restarting it.
 ### Repository permissions
 
 Authenticated gRPC, HTTP and QUIC operations require action grants for the named
-repository: `read` for reads, `write` for mutations, `admin` for metadata and
-protection settings, and `obliterate` for permanent deletion. Unknown gRPC
-methods require `write`. Copy operations also require `read` on the source
+repository: `read` for reads, `write` for mutations, `admin` or `owner` for
+metadata and protection settings, and `obliterate` for permanent deletion. No
+grant implies `read`. A push to a protected branch takes `push-protected` in
+place of `write`, releasing another user's lock takes `owner` or `admin`, and
+`AdminLock` takes `migrate`. Unknown gRPC methods require `write`. Copy operations also require `read` on the source
 repository. QUIC commands reject expired session credentials.
 
 The configured repository authorizer supplies these grants; policy-backed

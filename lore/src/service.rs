@@ -4,6 +4,9 @@ pub mod initialization;
 pub mod service_main;
 pub mod state;
 
+use std::sync::Arc;
+
+use lore_base::error::MountsBusy;
 use lore_base::log::LoreLogLevel;
 use lore_error_set::prelude::*;
 use lore_macro::LoreArgs;
@@ -12,6 +15,7 @@ use lore_revision::event::LoreServiceStatusEventData;
 use lore_revision::fs::swfs::mount_manager_state::MountManagerState;
 use lore_revision::global::GlobalConfig;
 use lore_revision::interface::LoreGlobalArgs;
+use lore_revision::lore::execution_context;
 use lore_revision::lore_info;
 use lore_revision::lore_warn;
 use lore_revision::service_state::ServiceStateImpl;
@@ -31,6 +35,7 @@ use crate::remote::service_process::report_settings_update_that_will_not_relay;
 use crate::remote::service_process::request_service_stop;
 use crate::remote::service_process::service_runs_in_this_process;
 use crate::remote::service_process::wait_until_no_service_is_listening;
+use crate::service::service_main::service_main;
 
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Default, LoreArgs, bitcode::Encode, bitcode::Decode)]
@@ -94,10 +99,17 @@ fn start_local(
 /// Arguments for stopping the Lore service process.
 pub struct LoreServiceStopArgs {}
 
+#[error_set]
+pub enum ServiceStopError {
+    MountsBusy,
+}
+
 /// Stop the running Lore service process.
 ///
 /// Does not start a service to stop, and succeeds when none is running, since
-/// that is the state it asks for.
+/// that is the state it asks for. A mount the service cannot release because
+/// something holds it refuses the stop with `MountsBusy`, unless the global
+/// `force` argument is set, which detaches busy mounts lazily.
 ///
 /// # Events
 ///
@@ -129,8 +141,18 @@ async fn stop_local(
 ) -> i32 {
     if service_runs_in_this_process() {
         return no_repository_call(globals, callback, args, stop, move |_args| async move {
+            // A busy mount keeps the service serving it, so the stop is refused before the
+            // service is asked to exit. `force` is read from the execution context: read from
+            // `globals` before they move, it would keep a second copy of them in the future of
+            // `stop_local`.
+            if let Some(manager) = MountManagerState::mount_manager() {
+                manager
+                    .unmount_all(execution_context().globals().force())
+                    .await
+                    .forward_any::<ServiceStopError>("Unmounting before the service stops")?;
+            }
             request_service_stop();
-            Ok::<(), ServiceProcessError>(())
+            Ok::<(), ServiceStopError>(())
         })
         .await;
     }
@@ -233,6 +255,7 @@ async fn set_executable_local(
     args: LoreServiceSetExecutableArgs,
     callback: LoreEventCallback,
 ) -> i32 {
+    let dry_run = globals.dry_run();
     let command =
         async move |args: LoreServiceSetExecutableArgs| -> Result<(), ServiceProcessError> {
             let (mut config, lock) = GlobalConfig::load_locked()
@@ -243,13 +266,19 @@ async fn set_executable_local(
             // reads as unset everywhere it is resolved.
             let executable = args.executable.as_str().trim();
             config.service.executable = (!executable.is_empty()).then(|| executable.to_string());
+            let tense = if dry_run { "would be " } else { "" };
             match config.service_executable() {
-                Some(executable) => lore_info!("Lore service executable set to {executable}"),
-                None => lore_info!("Lore service executable cleared"),
+                Some(executable) => {
+                    lore_info!("Lore service executable {tense}set to {executable}");
+                }
+                None => lore_info!("Lore service executable {tense}cleared"),
             }
             // Clearing the executable is one of the two ways to end up with a pair
             // that does not relay.
             report_settings_update_that_will_not_relay(&config);
+            if dry_run {
+                return Ok(());
+            }
 
             config
                 .save(lock)
@@ -308,6 +337,7 @@ async fn set_use_automatically_local(
     args: LoreServiceSetUseAutomaticallyArgs,
     callback: LoreEventCallback,
 ) -> i32 {
+    let dry_run = globals.dry_run();
     let command =
         async move |args: LoreServiceSetUseAutomaticallyArgs| -> Result<(), ServiceProcessError> {
             let (mut config, lock) = GlobalConfig::load_locked()
@@ -316,19 +346,22 @@ async fn set_use_automatically_local(
 
             let enabled = args.enabled != 0;
             config.service.use_automatically = enabled.then_some(true);
-            config
-                .save(lock)
-                .await
-                .forward::<ServiceProcessError>("saving global config")?;
+            if !dry_run {
+                config
+                    .save(lock)
+                    .await
+                    .forward::<ServiceProcessError>("saving global config")?;
 
-            // This process may go on to make more calls, and it decided once whether
-            // to relay them.
-            forget_whether_service_is_in_use();
+                // This process may go on to make more calls, and it decided once whether
+                // to relay them.
+                forget_whether_service_is_in_use();
+            }
 
+            let tense = if dry_run { "would" } else { "will" };
             if enabled {
-                lore_info!("Lore commands will be carried out by the service");
+                lore_info!("Lore commands {tense} be carried out by the service");
             } else {
-                lore_info!("Lore commands will be carried out in the process that runs them");
+                lore_info!("Lore commands {tense} be carried out in the process that runs them");
             }
             // Reported after the line above rather than instead of it: the setting
             // was stored, and this says what it will and will not do on its own.
@@ -480,4 +513,87 @@ fn emit_not_running_status() {
         swfs_mount_count: 0,
     })
     .send();
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Default)]
+/// Arguments for running the Lore service in the current process (no parameters).
+///
+/// Does not derive `LoreArgs`: running the service is always local, as it is the
+/// service that handles IPC and so cannot itself be routed through it.
+pub struct LoreServiceRunArgs {}
+
+/// Run the Lore service in the current process.
+///
+/// Returns once the service has stopped, either by `lore service stop` over IPC
+/// or by [`quit`] from within this process.
+///
+/// # Events
+///
+/// ## Standard Events
+///
+/// These events are emitted by all interface functions:
+///
+/// | Event | Description |
+/// |-------|-------------|
+/// | [`LoreEvent::Log`](crate::interface::LoreEvent::Log) | Diagnostic messages throughout execution |
+/// | [`LoreEvent::Error`](crate::interface::LoreEvent::Error) | Emitted for a non-fatal error during the operation |
+/// | [`LoreEvent::Complete`](crate::interface::LoreEvent::Complete) | Always emitted at the end; `status` is `0` on success or the error code on failure |
+/// | [`LoreEvent::End`](crate::interface::LoreEvent::End) | Always emitted after `Complete` to signal callback termination |
+pub async fn run(
+    globals: LoreGlobalArgs,
+    args: LoreServiceRunArgs,
+    callback: LoreEventCallback,
+) -> i32 {
+    let service_globals = globals.clone();
+    no_repository_call(globals, callback, args, run, async move |_args| {
+        service_main(service_globals, Arc::clone(ServiceStateImpl::global())).await
+    })
+    .await
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Default)]
+/// Arguments for requesting the Lore service running in this process to quit (no parameters).
+pub struct LoreServiceQuitArgs {}
+
+/// Request the Lore service running in this process to quit.
+///
+/// This is an in-process cancellation mechanism: it asks a service started with
+/// [`run`] in this process to shut down cleanly, and does not reach a service in
+/// another process (use [`stop`] for that). When no service runs in this
+/// process, this is a no-op that returns success.
+///
+/// # Events
+///
+/// ## Standard Events
+///
+/// These events are emitted by all interface functions:
+///
+/// | Event | Description |
+/// |-------|-------------|
+/// | [`LoreEvent::Log`](crate::interface::LoreEvent::Log) | Diagnostic messages throughout execution |
+/// | [`LoreEvent::Error`](crate::interface::LoreEvent::Error) | Emitted for a non-fatal error during the operation |
+/// | [`LoreEvent::Complete`](crate::interface::LoreEvent::Complete) | Always emitted at the end; `status` is `0` on success or the error code on failure |
+/// | [`LoreEvent::End`](crate::interface::LoreEvent::End) | Always emitted after `Complete` to signal callback termination |
+pub async fn quit(
+    globals: LoreGlobalArgs,
+    args: LoreServiceQuitArgs,
+    callback: LoreEventCallback,
+) -> i32 {
+    // Like [`stop`], this acts where it was called: routed through the service
+    // it would start one just to be told to quit.
+    quit_local(globals, args, callback).await
+}
+
+async fn quit_local(
+    globals: LoreGlobalArgs,
+    args: LoreServiceQuitArgs,
+    callback: LoreEventCallback,
+) -> i32 {
+    no_repository_call(globals, callback, args, quit, move |_args| async move {
+        request_service_stop();
+        Ok::<(), ServiceProcessError>(())
+    })
+    .await
 }

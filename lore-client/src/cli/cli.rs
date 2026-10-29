@@ -82,12 +82,16 @@ pub struct LoreCli {
     pub identity: Option<String>,
 
     /// Use given authentication token instead of one from the secure store. Acts
-    /// as the identity the token was issued to
+    /// as the identity the token was issued to. Read from `LORE_IDENTITY_TOKEN` when
+    /// omitted. Unsafe: a value given here is visible to other users in the
+    /// process table and is kept in the shell history
     #[clap(global = true, long, value_name = "token", conflicts_with = "identity")]
     pub identity_token: Option<String>,
 
     /// Use given authorization token instead of exchanging one with the
-    /// authentication service
+    /// authentication service. Read from `LORE_ACCESS_TOKEN` when omitted. Unsafe:
+    /// a value given here is visible to other users in the process table and is
+    /// kept in the shell history
     #[clap(global = true, long, value_name = "token", conflicts_with = "identity")]
     pub access_token: Option<String>,
 
@@ -101,7 +105,7 @@ pub struct LoreCli {
     #[clap(global = true, hide = true, long, action)]
     pub nocompress: bool,
 
-    /// Set maximum number of parallel connections
+    /// Set the number of parallel storage connections (default 1, at most 10)
     #[clap(global = true, long)]
     pub max_connections: Option<u32>,
 
@@ -143,6 +147,12 @@ pub struct LoreCli {
     /// Cache fragment payloads fetched from remote in the local store
     #[clap(global = true, long, action)]
     pub cache: bool,
+
+    /// Trust the remote as part of this machine's infrastructure: data fetched from it is not hash
+    /// verified. For machines where performance comes first, such as a build server streaming from
+    /// a server in its own backend
+    #[clap(global = true, long, action)]
+    trust_remote: bool,
 
     /// Disable interactive prompts (e.g., per-link commit messages)
     #[clap(global = true, long, action)]
@@ -272,6 +282,12 @@ pub enum LoreCommands {
     Status(repository::RepositoryStatusArgs),
 
     /// Clone a remote repository into the given path
+    ///
+    /// A clone needs the remote, so `--offline` does not keep it from connecting: it prepares the
+    /// clone for working offline instead. With it, as with `--cache`, a clone that writes its files
+    /// caches every file metadata block of the cloned revision, which staging and committing write
+    /// to, so both work without the remote, and fails if it cannot. A bare clone writes no files
+    /// and reads them from the remote when a command needs them.
     Clone(repository::RepositoryCloneArgs),
 
     /// Stage changes for commit.
@@ -428,6 +444,32 @@ pub fn resolve_auth_mode(
     Ok(AuthMode::Auto)
 }
 
+pub const IDENTITY_TOKEN_VAR: &str = "LORE_IDENTITY_TOKEN";
+pub const ACCESS_TOKEN_VAR: &str = "LORE_ACCESS_TOKEN";
+
+/// A secret from its flag, or else from its environment variable. A blank variable reads
+/// as unset.
+pub fn resolve_secret(from_flag: Option<&str>, from_env: Option<OsString>) -> Option<String> {
+    if let Some(from_flag) = from_flag {
+        return Some(from_flag.to_owned());
+    }
+    from_env
+        .map(|from_env| from_env.to_string_lossy().into_owned())
+        .filter(|from_env| !from_env.trim().is_empty())
+}
+
+/// [`resolve_secret`] from the variable `var`. A secret given as `flag` warns, since other
+/// users can read it in the process table and the shell history keeps it.
+pub fn secret_from_flag_or_env(flag: &str, from_flag: Option<&str>, var: &str) -> Option<String> {
+    if from_flag.is_some() {
+        eprintln!(
+            "Warning: the value of {flag} is visible to other users in the process table and is \
+             kept in the shell history. Set {var} instead."
+        );
+    }
+    resolve_secret(from_flag, std::env::var_os(var))
+}
+
 pub fn lore_globals_from_args(cli: &LoreCli) -> Result<LoreGlobalArgs, LoreCliError> {
     let mut args = LoreGlobalArgs {
         repository_path: get_repository_path(cli.repository.clone()),
@@ -440,10 +482,9 @@ pub fn lore_globals_from_args(cli: &LoreCli) -> Result<LoreGlobalArgs, LoreCliEr
         no_gc: cli.no_gc.into(),
         sync_data: cli.sync_data.into(),
         cache: cli.cache.into(),
+        trust_remote: cli.trust_remote.into(),
 
         identity: cli.identity.clone().into(),
-        identity_token: cli.identity_token.clone().into(),
-        access_token: cli.access_token.clone().into(),
 
         search_limit: cli.search_limit.unwrap_or_default() as u32,
         search_nearest: cli.search_nearest.into(),
@@ -481,6 +522,23 @@ pub fn lore_globals_from_args(cli: &LoreCli) -> Result<LoreGlobalArgs, LoreCliEr
     } else {
         0
     };
+
+    // An explicit identity outranks a token in the environment, as it conflicts with
+    // the token flags.
+    if cli.identity.is_none() {
+        args.identity_token = secret_from_flag_or_env(
+            "--identity-token",
+            cli.identity_token.as_deref(),
+            IDENTITY_TOKEN_VAR,
+        )
+        .into();
+        args.access_token = secret_from_flag_or_env(
+            "--access-token",
+            cli.access_token.as_deref(),
+            ACCESS_TOKEN_VAR,
+        )
+        .into();
+    }
 
     args.auth_mode = resolve_auth_mode(cli.auth_mode, std::env::var_os(AUTH_MODE_VAR))?;
 

@@ -23,6 +23,7 @@ use crate::errors::WriteRequired;
 use crate::event;
 use crate::filter::FilterMode;
 use crate::fs::filesystem_provider::FilesystemDiffIntent;
+use crate::fs::filesystem_provider::HoldOptions;
 use crate::fs::filesystem_provider::InstanceOperation;
 use crate::fs::filesystem_provider::InstanceOperationImpl;
 use crate::fs::filesystem_provider::MeasuredNode;
@@ -70,7 +71,9 @@ use crate::util;
 use crate::util::path::RelativePath;
 use crate::util::path::expand_path_ancestors;
 
-/// Carries the working tree from `state_current` to `state_target`.
+/// Carries the working tree from `state_current` to `state_target`. A provider that holds its
+/// state in a `State` is handed `state_target` alone and carries itself there
+/// ([`InstanceOperationImpl::hold_state`]).
 ///
 /// Each context answers for the state beside it: one for a revision change, and two for a view
 /// change, where the tree holds what the current view materialized and is left holding what the
@@ -128,6 +131,22 @@ pub async fn realize_state(
         }
     }
     */
+
+    if operation.holds_state() {
+        let hold = {
+            let context = execution_context();
+            let globals = context.globals();
+            HoldOptions {
+                overwrite_local: globals.force(),
+                keep_local: options.forward_changes,
+                dry_run: globals.dry_run(),
+            }
+        };
+        return operation
+            .hold_state(repository_target, state_target, hold)
+            .await
+            .forward::<SyncError>("Holding the target revision");
+    }
 
     let stats: Arc<SyncRealizeStats> = Arc::default();
     let changes = if !options.reset {
@@ -567,6 +586,10 @@ async fn mode_is_the_working_tree_own(
 /// A caller that realizes every change it verified, which a merge does to build the staged state
 /// out of them, takes the change as this leaves it and disregards the answer. One that realizes
 /// only what the working copy still needs, which a sync does, drops the rest.
+///
+/// A file found to hold the incoming content has its time recorded where it is older than the
+/// operation's clock floor ([`InstanceOperationImpl::clock_floor`]), which a comparison reads
+/// before reading the file.
 #[allow(clippy::too_many_arguments)]
 pub async fn verify_filesystem(
     change: &mut NodeChange,
@@ -655,11 +678,13 @@ pub async fn verify_filesystem(
                     )
                     .await?;
                 }
-                operation.record_modified_time(
-                    &change.from.mapping.repository,
-                    change.path(),
-                    modifications.info.mtime(),
-                );
+                if modifications.info.mtime() < operation.clock_floor(&repository).await {
+                    operation.record_modified_time(
+                        &change.from.mapping.repository,
+                        change.path(),
+                        modifications.info.mtime(),
+                    );
+                }
                 return Ok(false);
             }
             stats.file_retain.fetch_add(1, Ordering::Relaxed);
@@ -802,11 +827,13 @@ pub async fn verify_filesystem(
                     )
                     .await?;
                 }
-                operation.record_modified_time(
-                    &change.from.mapping.repository,
-                    change.path(),
-                    modifications.info.mtime(),
-                );
+                if modifications.info.mtime() < operation.clock_floor(&repository).await {
+                    operation.record_modified_time(
+                        &change.from.mapping.repository,
+                        change.path(),
+                        modifications.info.mtime(),
+                    );
+                }
 
                 return Ok(false);
             }
@@ -1452,8 +1479,7 @@ async fn realize_changes_delete(
                         break;
                     }
                 } else {
-                    // Directory unlink failed, keep it and the locally added/modified files
-                    deleted = false;
+                    // Success.
                     break;
                 }
             }
@@ -1572,6 +1598,8 @@ async fn sync_execute_modify_add(
 ) -> Result<(), SyncError> {
     const MAX_TASK_COUNT: usize = 10000;
     let mut tasks = JoinSet::new();
+    // Finish independent changes even when one file cannot be written. The first
+    // failure remains the terminal result; warnings identify every failed attempt.
     let mut sync_error = None;
 
     while let Some(item) = rx.recv().await {
@@ -1587,13 +1615,20 @@ async fn sync_execute_modify_add(
             stats.clone(),
         )
         .await;
-        sync_error = sync_error.or(result.err());
+        sync_error = sync_error.or(result
+            .inspect_err(|err| {
+                lore_warn!("Sync could not materialize content: {err}\n{}", err.trace());
+            })
+            .err());
 
         while let Some(result) = tasks.try_join_next() {
             sync_error = sync_error.or(result
                 .internal("Recursion task failed")
                 .map_err(SyncError::from)
                 .flatten()
+                .inspect_err(|err| {
+                    lore_warn!("Sync could not materialize content: {err}\n{}", err.trace());
+                })
                 .err());
         }
         while tasks.len() > MAX_TASK_COUNT
@@ -1603,11 +1638,10 @@ async fn sync_execute_modify_add(
                 .internal("Recursion task failed")
                 .map_err(SyncError::from)
                 .flatten()
+                .inspect_err(|err| {
+                    lore_warn!("Sync could not materialize content: {err}\n{}", err.trace());
+                })
                 .err());
-        }
-
-        if sync_error.is_some() {
-            break;
         }
     }
 
@@ -1616,6 +1650,9 @@ async fn sync_execute_modify_add(
             .internal("Recursion task failed")
             .map_err(SyncError::from)
             .flatten()
+            .inspect_err(|err| {
+                lore_warn!("Sync could not materialize content: {err}\n{}", err.trace());
+            })
             .err());
     }
 
@@ -2742,7 +2779,7 @@ async fn stage_divergent_move(
 }
 
 impl LoreRevisionSyncFileEventData {
-    fn new(node_change: &NodeChange, size: u64, file: bool) -> Self {
+    pub(crate) fn new(node_change: &NodeChange, size: u64, file: bool) -> Self {
         Self {
             path: LoreString::from(node_change.path()),
             size,
