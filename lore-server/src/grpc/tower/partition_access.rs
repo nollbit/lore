@@ -117,6 +117,57 @@ fn named_partition(headers: &HeaderMap) -> Result<Option<RepositoryId>, Status> 
     get_repository(&metadata).map(Some)
 }
 
+/// The actions of which a token must hold at least one for `method`, named
+/// by its last path segment. Unknown methods need `write`.
+fn required_actions(method: &str) -> &'static [Action] {
+    match method {
+        "EnvironmentGet"
+        | "ServerInfo"
+        | "RepositoryGet"
+        | "RepositoryList"
+        | "RepositoryMetadataGet"
+        | "BranchGet"
+        | "BranchList"
+        | "BranchMetadataGet"
+        | "RevisionList"
+        | "RevisionInfo"
+        | "RevisionTree"
+        | "RevisionDiff"
+        | "ContentDiff"
+        | "Get"
+        | "GetMetadata"
+        | "GetResolved"
+        | "Query"
+        | "Status"
+        | "MutableLoad"
+        | "Subscribe"
+        | "SubscribeWithAcks"
+        | "RepositoryQuery"
+        | "BranchQuery"
+        | "BranchDiff"
+        | "BranchRevisionList"
+        | "RevisionDescribe"
+        | "RevisionStateHistory"
+        | "Ping"
+        // Healing needs `write`, which the handler checks.
+        | "Verify" => &[Action::Read],
+        "RepositoryCreate"
+        | "RepositoryDelete"
+        | "RepositoryMetadataSet"
+        | "BranchProtect"
+        | "BranchUnprotect"
+        | "BranchMetadataSet" => &[Action::Admin, Action::Owner],
+        // Protected branches need `push-protected`, the rest `write`; the
+        // handler tells them apart.
+        "BranchPush" => &[Action::Write, Action::PushProtected],
+        // `owner` or `admin` releases another caller's lock.
+        "Unlock" => &[Action::Write, Action::Owner, Action::Admin],
+        "AdminLock" => &[Action::Migrate],
+        "Obliterate" => &[Action::Obliterate],
+        _ => &[Action::Write],
+    }
+}
+
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for PartitionAccessService<S>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>> + Clone + Send + 'static,
@@ -147,45 +198,7 @@ where
             };
 
             let method = request.uri().path().rsplit('/').next().unwrap_or("");
-            let action = match method {
-                "EnvironmentGet"
-                | "ServerInfo"
-                | "RepositoryGet"
-                | "RepositoryList"
-                | "RepositoryMetadataGet"
-                | "BranchGet"
-                | "BranchList"
-                | "BranchMetadataGet"
-                | "RevisionList"
-                | "RevisionInfo"
-                | "RevisionTree"
-                | "RevisionDiff"
-                | "ContentDiff"
-                | "Get"
-                | "GetMetadata"
-                | "GetResolved"
-                | "Query"
-                | "Status"
-                | "MutableLoad"
-                | "Subscribe"
-                | "SubscribeWithAcks"
-                | "RepositoryQuery"
-                | "BranchQuery"
-                | "BranchDiff"
-                | "BranchRevisionList"
-                | "RevisionDescribe"
-                | "RevisionStateHistory"
-                | "Ping" => Action::Read,
-                "RepositoryCreate"
-                | "RepositoryDelete"
-                | "RepositoryMetadataSet"
-                | "BranchProtect"
-                | "BranchUnprotect"
-                | "BranchMetadataSet"
-                | "AdminLock" => Action::Admin,
-                "Obliterate" => Action::Obliterate,
-                _ => Action::Write,
-            };
+            let actions = required_actions(method);
             // Authorization denials are flattened to `Denied` inside the
             // timed stage, so elapsing is the only thing the stage reports
             // besides a verdict. Only the extensions are borrowed into the
@@ -196,7 +209,7 @@ where
                 tokio::time::timeout(authorization_timeout, async move {
                     let token = get_verified_token(extensions);
                     match authorizer
-                        .granted_action_access(token.as_ref(), repository, action)
+                        .granted_any_action_access(token.as_ref(), repository, actions)
                         .await
                     {
                         Ok(grants) => Access::Granted(grants),

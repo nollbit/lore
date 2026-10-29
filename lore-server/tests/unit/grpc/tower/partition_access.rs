@@ -412,6 +412,38 @@ async fn read_grants_allow_browsing_but_deny_mutations() {
     }
 }
 
+/// Methods that admit several actions pass with any one of them, and no
+/// grant stands in for one the method does not name.
+#[tokio::test]
+async fn each_method_admits_only_its_own_actions() {
+    for (method, held, allowed) in [
+        ("Verify", "read", true),
+        ("Verify", "write", false),
+        ("BranchPush", "push-protected", true),
+        ("BranchPush", "admin", false),
+        ("BranchProtect", "owner", true),
+        ("BranchProtect", "write", false),
+        ("BranchMetadataSet", "admin", true),
+        ("BranchMetadataSet", "write", false),
+        ("Unlock", "admin", true),
+        ("Unlock", "read", false),
+        ("AdminLock", "migrate", true),
+        ("AdminLock", "admin", false),
+        ("Get", "write", false),
+    ] {
+        let authorizer = EnumeratingAuthorizer::new(Grants::Actions([held.to_string()].into()));
+        let (mut service, inner) =
+            service_with(PartitionAccessLayer::new(authorizer, TEST_TIMEOUT));
+        let mut req = request(Some(repository()), true);
+        *req.uri_mut() = format!("/x.Service/{method}").parse().unwrap();
+        let response = service.call(req).await.unwrap();
+        assert_eq!(inner.calls(), usize::from(allowed), "{method} with {held}");
+        if !allowed {
+            assert_eq!(status_of(&response).code(), Code::PermissionDenied);
+        }
+    }
+}
+
 /// One enumeration serves both halves: reachability is answered from it
 /// and the handler receives it as an extension naming the partition, so
 /// an action check needs no second authorizer call.

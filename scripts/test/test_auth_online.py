@@ -803,13 +803,14 @@ PARTITION_SCOPED_SERVICES = (
     ("lore-proto/proto/lock.proto", "LockService"),
 )
 
-# The actions that admit each RPC, any one of them sufficing. `("read",)`
-# means any grant on the repository admits it, since a grant implies `read`.
+# The actions that admit each RPC, any one of them sufficing; a tuple names
+# actions that are needed together. `read` is an action like any other: no
+# other grant implies it. Setting branch metadata needs `write` and also
+# `owner` or `admin`.
 # `None` for the two that act on no partition data: the liveness ping and the
 # unimplemented ContentDiff. Push takes `push-protected` for a protected branch and unlock
 # takes `owner` or `admin` for another user's locks; the empty probe body
-# names neither, so either passes the check. Protect and unprotect also admit
-# the creator with `write`, which the probe's caller is not.
+# names neither, so either passes the check.
 RPC_ACTIONS = {
     "/urc.rpc.StorageService/Get": ("read",),
     "/urc.rpc.StorageService/Ping": None,
@@ -842,7 +843,10 @@ RPC_ACTIONS = {
     "/urc.rpc.RevisionService/BranchDiff": ("read",),
     "/urc.rpc.RevisionService/BranchRevisionList": ("read",),
     "/urc.rpc.RevisionService/BranchMetadataGet": ("read",),
-    "/urc.rpc.RevisionService/BranchMetadataSet": ("write",),
+    "/urc.rpc.RevisionService/BranchMetadataSet": (
+        ("write", "owner"),
+        ("write", "admin"),
+    ),
     "/urc.rpc.RevisionService/RevisionDescribe": ("read",),
     "/urc.rpc.RevisionService/RevisionDiff": ("read",),
     "/urc.rpc.RevisionService/RevisionStateHistory": ("read",),
@@ -854,7 +858,10 @@ RPC_ACTIONS = {
     "/lore.revision.v1.RevisionService/BranchList": ("read",),
     "/lore.revision.v1.RevisionService/BranchPush": ("write", "push-protected"),
     "/lore.revision.v1.RevisionService/BranchMetadataGet": ("read",),
-    "/lore.revision.v1.RevisionService/BranchMetadataSet": ("write",),
+    "/lore.revision.v1.RevisionService/BranchMetadataSet": (
+        ("write", "owner"),
+        ("write", "admin"),
+    ),
     "/lore.revision.v1.RevisionService/RevisionList": ("read",),
     "/lore.thin_client.v1.ThinClientService/ContentDiff": None,
     "/lore.thin_client.v1.ThinClientService/RevisionInfo": ("read",),
@@ -899,7 +906,8 @@ def test_every_partition_scoped_rpc_is_classified():
 def test_every_partition_scoped_rpc_asks_its_action(auth_env, make_actor):
     """Each RPC, sent raw with an empty body, is refused for a token lacking
     its action and passes the check for a token holding only that action.
-    Read RPCs pass for a token holding any grant on the repository.
+    Read RPCs need `read` itself: holding another grant on the repository
+    does not imply it.
     The access tokens carry a `resources` claim, which the legacy authorizer
     answers in place, so no stub rule is involved. The checks run before
     the body is used: PERMISSION_DENIED is the check, anything else means
@@ -919,19 +927,34 @@ def test_every_partition_scoped_rpc_asks_its_action(auth_env, make_actor):
             ("authorization", f"Bearer {token}"),
         )
 
-    tokens = {
-        action: holding(action)
+    def requirements(accepted) -> list[frozenset[str]]:
+        return [
+            frozenset(option if isinstance(option, tuple) else (option,))
+            for option in accepted
+        ]
+
+    held_sets = {
+        frozenset((action,))
         for action in ("read", "write", "owner", "admin", "migrate", "push-protected")
+    } | {
+        needed
+        for accepted in RPC_ACTIONS.values()
+        if accepted is not None
+        for needed in requirements(accepted)
     }
+    tokens = {held: holding(*sorted(held)) for held in held_sets}
     failures = []
     for method, accepted in RPC_ACTIONS.items():
         if accepted is None:
             continue
+        options = requirements(accepted)
         for held, metadata in tokens.items():
             code, _body, details = call(target, method, metadata=metadata, timeout=5.0)
             denied = code == grpc.StatusCode.PERMISSION_DENIED
-            if denied != (accepted != ("read",) and held not in accepted):
-                failures.append(f"{method} with only {held}: {code} '{details}'")
+            if denied == any(needed <= held for needed in options):
+                failures.append(
+                    f"{method} with only {'+'.join(sorted(held))}: {code} '{details}'"
+                )
     assert not failures, "\n".join(failures)
 
 

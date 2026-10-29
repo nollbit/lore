@@ -459,6 +459,31 @@ pub async fn require_repository_administration(
     }
 }
 
+/// Refuses with [`no_repository_access_status`] unless a verified caller holds
+/// `admin` or `owner` on `repository`. Without a verified token there is no
+/// such grant to hold, and `write` is asked instead.
+pub async fn require_repository_metadata_change(
+    authorizer: &Arc<dyn RepositoryAuthorizer>,
+    token: Option<&VerifiedToken<'_>>,
+    repository: RepositoryId,
+) -> Result<(), Status> {
+    let actions: &[Action] = if token.is_some() {
+        &[Action::Admin, Action::Owner]
+    } else {
+        &[Action::Write]
+    };
+    for &action in actions {
+        if authorizer
+            .check_repository_access(token, repository, action)
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+    Err(no_repository_access_status())
+}
+
 /// Whether the caller may perform `action` on the partition the request's
 /// metadata names, answered from the partition-access layer's grants when
 /// present. Denial is the uniform [`no_repository_access_status`].

@@ -213,6 +213,18 @@ impl dyn RepositoryAuthorizer {
         repository_id: RepositoryId,
         action: Action,
     ) -> Result<Option<Grants>, Status> {
+        self.granted_any_action_access(token, repository_id, &[action])
+            .await
+    }
+
+    /// [`granted_action_access`](Self::granted_action_access) for a caller
+    /// who must hold at least one of `actions`.
+    pub async fn granted_any_action_access(
+        &self,
+        token: Option<&VerifiedToken<'_>>,
+        repository_id: RepositoryId,
+        actions: &[Action],
+    ) -> Result<Option<Grants>, Status> {
         let Some(verified) = token else {
             return self.granted_access(None, repository_id).await;
         };
@@ -224,14 +236,25 @@ impl dyn RepositoryAuthorizer {
             return Err(crate::grpc::no_repository_access_status());
         }
         match self.granted_actions(token, repository_id).await {
-            Ok(Some(Grants::Actions(actions))) if actions.contains(action.as_str()) => {
-                Ok(Some(Grants::Actions(actions)))
+            Ok(Some(Grants::Actions(granted)))
+                if actions
+                    .iter()
+                    .any(|action| granted.contains(action.as_str())) =>
+            {
+                Ok(Some(Grants::Actions(granted)))
             }
-            Ok(None) => self
-                .check_repository_access(token, repository_id, action)
-                .await
-                .map(|()| None)
-                .map_err(|_error| crate::grpc::no_repository_access_status()),
+            Ok(None) => {
+                for &action in actions {
+                    if self
+                        .check_repository_access(token, repository_id, action)
+                        .await
+                        .is_ok()
+                    {
+                        return Ok(None);
+                    }
+                }
+                Err(crate::grpc::no_repository_access_status())
+            }
             _ => Err(crate::grpc::no_repository_access_status()),
         }
     }

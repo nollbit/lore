@@ -327,6 +327,11 @@ impl QuicService for StorageServiceV4 {
                         | crate::quic::storage_service::ParsedStorageRequest::MutableLoad(_) => {
                             Action::Read
                         }
+                        crate::quic::storage_service::ParsedStorageRequest::Verify(verify)
+                            if verify.heal == 0 =>
+                        {
+                            Action::Read
+                        }
                         _ => Action::Write,
                     };
                     if self

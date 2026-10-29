@@ -535,6 +535,7 @@ impl QuicService for StorageService {
                 | ParsedStorageRequest::Query(_)
                 | ParsedStorageRequest::GetResolved(_)
                 | ParsedStorageRequest::MutableLoad(_) => Action::Read,
+                ParsedStorageRequest::Verify(verify) if verify.heal == 0 => Action::Read,
                 _ => Action::Write,
             };
             let raw = context
