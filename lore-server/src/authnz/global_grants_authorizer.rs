@@ -43,11 +43,11 @@ impl GlobalGrantsAuthorizer {
             })
     }
 
-    /// Any authenticated principal reaches every partition on this tier.
+    /// Any authenticated principal reaches and reads every partition on this
+    /// tier, so `read` is enumerated with the rest.
     fn grants_for(&self, token: &VerifiedToken<'_>) -> Grants {
-        let mut actions: HashSet<String> = self
-            .implicit_actions
-            .iter()
+        let mut actions: HashSet<String> = std::iter::once(Action::Read)
+            .chain(self.implicit_actions.iter().copied())
             .map(|action| action.as_str().to_string())
             .collect();
         if let Some(claim) = &self.permission_claim

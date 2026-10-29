@@ -908,6 +908,41 @@ mod granted_action_access {
         );
     }
 
+    /// Tier 1 lets every token holder read every partition, so its
+    /// enumeration names `read` and the explicit check admits it.
+    #[tokio::test]
+    async fn tier_one_tokens_read_every_partition() {
+        let authorizer: Arc<dyn RepositoryAuthorizer> = Arc::new(
+            lore_server::authnz::global_grants_authorizer::GlobalGrantsAuthorizer::new(
+                None,
+                vec![Action::Write],
+            ),
+        );
+        let claims = AuthorizationToken {
+            expires: u64::MAX,
+            ..Default::default()
+        };
+        let token = VerifiedToken {
+            raw: "token",
+            claims: &claims,
+        };
+        for action in [Action::Read, Action::Write] {
+            assert!(
+                authorizer
+                    .granted_action_access(Some(&token), RepositoryId::default(), action)
+                    .await
+                    .is_ok(),
+                "{action}"
+            );
+        }
+        assert!(
+            authorizer
+                .granted_action_access(Some(&token), RepositoryId::default(), Action::Admin)
+                .await
+                .is_err()
+        );
+    }
+
     /// Without a token there is no grant to hold, so a server without
     /// `[server.auth]` keeps every action open to the handlers' own checks.
     #[tokio::test]
