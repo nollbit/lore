@@ -4074,19 +4074,27 @@ pub async fn resolve_by_name(
             format!("Failed to connect to remote repository {remote_url}")
         })?;
 
+    resolve_on(repository_service.as_ref(), name).await
+}
+
+/// Looks `name` up on `repository_service`, as a repository ID first when it parses as one, so
+/// that an access token scoped to that repository can authorize the lookup.
+#[lore_macro::test_pub]
+pub(crate) async fn resolve_on(
+    repository_service: &dyn lore_transport::Repository,
+    name: &str,
+) -> Result<RepositoryData, RepositoryError> {
+    let id = RepositoryId::from_str(name).unwrap_or_default();
+    if !id.is_zero() {
+        match repository_service.query(Some(id), None).await {
+            Err(err) if err.is_not_found() => {}
+            result => return result.forward::<RepositoryError>("Repository not found"),
+        }
+    }
+
     match repository_service.query(None, Some(name)).await {
         Ok(data) => Ok(data),
-        Err(err) if err.is_not_found() => {
-            // Fallback path in case it's an ID
-            let id = RepositoryId::from_str(name).unwrap_or_default();
-            if id.is_zero() {
-                return Err(RepositoryError::from(NotFound));
-            }
-            repository_service
-                .query(Some(id), None)
-                .await
-                .forward::<RepositoryError>("Repository not found")
-        }
+        Err(err) if err.is_not_found() => Err(RepositoryError::from(NotFound)),
         Err(err) => Err(err).forward::<RepositoryError>("Repository not found"),
     }
 }
