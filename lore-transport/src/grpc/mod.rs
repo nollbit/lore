@@ -1625,6 +1625,34 @@ impl GRPCRepository {
             auth,
         ))
     }
+
+    /// A client for looking `repository` up when the call supplied an access token and no
+    /// identity token: there is no login token to send, and the access token authorizes the
+    /// lookup of the repository it is scoped to. `None` otherwise, and the lookup keeps the
+    /// login token.
+    async fn access_token_client(
+        &self,
+        repository: RepositoryId,
+    ) -> Option<repository_client::RepositoryService<AuthzInterceptor>> {
+        let (identity_token, access_token) = self.credentials.tokens();
+        if access_token.is_empty() || !identity_token.is_empty() {
+            return None;
+        }
+        let auth = self
+            .connection
+            .repository_authz(
+                &self.auth_endpoint,
+                self.identity.as_str(),
+                repository,
+                &self.credentials,
+            )
+            .await;
+        Some(repository_client::RepositoryService::for_partition(
+            self.connection.channel(),
+            repository,
+            auth,
+        ))
+    }
 }
 
 #[async_trait]
@@ -1683,7 +1711,14 @@ impl Repository for GRPCRepository {
     ) -> Result<RepositoryData, ProtocolError> {
         with_reconnect(
             &self.connection,
-            || async { self.client.read().await.query(id, name).await },
+            || async {
+                if let Some(id) = id
+                    && let Some(client) = self.access_token_client(id).await
+                {
+                    return client.query(Some(id), name).await;
+                }
+                self.client.read().await.query(id, name).await
+            },
             |reconnect_id| self.reconnect(reconnect_id),
         )
         .await
