@@ -163,8 +163,8 @@ it first becomes load-bearing.
 - **Layer.** An overlay of a subset of one repository's content into another at a path, applied
   locally rather than stored in the revision. Layers do not travel with a revision; different
   machines can have different layer configurations.
-- **Obliteration.** Removal of a fragment's payload while preserving its address. Reads of an
-  obliterated fragment return a typed absence rather than corruption.
+- **Obliteration.** Removal of a fragment and its recursively referenced fragments from a partition.
+  Reads of removed content return an ordinary not-found result; revision history is not rewritten.
 
 ### 2. Motivation: Why a New VCS?
 
@@ -318,11 +318,12 @@ use, modification, embedding, or independent reimplementation.
 the remote, not directly.
 
 **Adversarial-server threat model.** Clients hash-validate every fragment they receive, so content
-tampering is detectable end-to-end regardless of who served the bytes. The trust clients place in
-the server is narrower - that it correctly reports the latest revision of a branch, the name-to-ID
-mappings, and the access decisions for the session - and that trust is bounded by the server's
-authentication and authorization model. Lore does not aim to defend against a server that is itself
-adversarial about its own pointers or permissions.
+tampering is detectable end-to-end regardless of who served the bytes; a command that declares its
+server trusted (`--trust-remote`) gives that up. The trust clients place in the server is
+narrower - that it correctly reports the latest revision of a branch, the name-to-ID mappings, and
+the access decisions for the session - and that trust is bounded by the server's authentication
+and authorization model. Lore does not aim to defend against a server that is itself adversarial
+about its own pointers or permissions.
 
 ### 4. Conceptual Model
 
@@ -1496,6 +1497,10 @@ work:
   without contacting the remote.
 - *A fragment cache.* Bytes for fragments that have been fetched at any point. Subsequent
   reads of those fragments do not hit the remote.
+- *File metadata blocks, after a clone prepared for offline work.* A clone that writes its
+  files, given `--offline` or `--cache`, holds every file metadata block of its revision, which
+  staging and committing write to. Any other clone fetches a block the first time a command
+  needs it, so offline work right after it, such as a commit, can need the remote.
 
 What the client does *not* hold is the canonical answer to "what is the current latest of
 this branch on the remote." That answer can be queried at sync time; between syncs, the
@@ -1828,10 +1833,10 @@ visible to anyone.
 
 Clients depend on this. Hash validation of fetched fragments is end-to-end and free (the
 content address proves the bytes), but graph-level validation is what the server has
-already done. This is the trust boundary in §3.2: clients hash-validate content, and trust
-the server to have validated graph structure. A misbehaving server could in principle
-present a malformed graph; the defense is that the server rejects malformed pushes, so
-clients fetching from a correctly-operating server never see one.
+already done. This is the trust boundary in §3.2: clients hash-validate content, unless a
+command declares its server trusted, and trust the server to have validated graph structure. A
+misbehaving server could in principle present a malformed graph; the defense is that the server
+rejects malformed pushes, so clients fetching from a correctly-operating server never see one.
 
 #### 16.4 What can go wrong and what each failure looks like
 
@@ -2058,7 +2063,10 @@ Within a connection a client opens *sessions*. A session binds a repository (par
 correlation ID, and a user identity to a server-assigned `u32` session ID. Many concurrent
 sessions per connection are supported, allocated monotonically and not reused within a
 connection. The Authorize command creates and ends sessions; every subsequent storage
-command carries the session ID in its header.
+command carries the session ID in its header. A session lives as long as its connection:
+when the client reconnects, it starts each session again on the new connection before the
+next command under it, so a session ID is only ever sent on the connection that assigned
+it.
 
 The combination - several streams, pipelined commands per stream, many sessions per
 connection - lets a single connection saturate available bandwidth without head-of-line
@@ -2130,43 +2138,25 @@ fragment-level obliteration.
 
 #### 19.3 Fragment-level obliteration
 
-Obliteration in Lore removes a fragment's *payload* while keeping its *address* intact in
-the store's index. The fragment's metadata records that the payload has been obliterated.
-A reader who asks for the fragment by address gets a typed "this fragment was obliterated"
-response, with the metadata flags indicating the state, rather than corrupted bytes or a
-generic not-found.
+Obliteration removes the requested fragment and, when its payload is a fragment list,
+recursively removes the fragments it names. Revision snapshots keep their recorded addresses;
+obliteration does not rewrite history.
 
-Two flags carry the obliteration state:
-
-- `PayloadObliterating` - obliteration is in progress; the payload is being torn down but
-  the operation has not completed.
-- `PayloadObliterated` - obliteration has completed; the payload is gone.
-
-Together they form a small state machine: a fragment is either present, mid-obliteration,
-or obliterated. Readers see the current state on every fetch and behave accordingly: a
-present fragment yields its bytes; an obliterating or obliterated fragment yields a typed
-absence.
-
-The address survives because revision graphs point at it, and removing the address itself
-would break every revision that ever referenced it. The bytes are gone because that is
-the actual goal.
+The store uses `PayloadObliterating` and `PayloadObliterated` internally while removing
+content. An obliterated entry does not match `query`, `get_metadata`, or `get`. Readers
+receive an ordinary not-found result, not a distinct public obliteration status. A reader
+cannot infer from that error alone why the content is missing.
 
 #### 19.4 File ID as the obliteration scope
 
-Reference counting fails because there is no efficient way to enumerate "every reference
-to a hash" across an entire repository or deployment. Lore sidesteps the problem with the
-*context* field of fragment addresses (§7.4): for fragments backing a file's content, the
-context is the file's stable per-file ID.
+For file content, an address's context is the stable file ID (§7.4). Recursive obliteration
+preserves that context when addressing child fragments. It removes the requested root and its
+children, not every version with the same context. The partition and full address distinguish
+associations even when other files share the same bytes.
 
-When a file is obliterated, the storage layer obliterates every fragment whose address
-matches the file's context. The lookup is by context, not by walking revisions; the cost
-is proportional to the number of fragments belonging to the file, not to the size of the
-repository or its history. Different files that happen to share content do not share a
-context, so obliterating one file does not affect the bytes of another even though they
-share underlying storage.
-
-This is why context exists as a separate field of the address. It carries enough identity
-to scope obliteration without compromising the dedup that makes content addressing useful.
+Different revisions can reference the same address, and different fragmented roots can share
+child fragments. Deleting an old version can therefore remove content required by a branch's
+latest revision. Revision age alone does not establish whether latest content is affected.
 
 #### 19.5 Two-phase obliteration
 
@@ -2174,7 +2164,7 @@ Obliteration is a two-phase operation, reflected in the two flags. Phase one tra
 the fragment from present to `PayloadObliterating`: the metadata is updated to record
 that obliteration is in progress, and the payload is scheduled for deletion. Phase two
 transitions it to `PayloadObliterated`: the payload is gone, the metadata records it,
-and readers see a typed absence.
+and readers see a not-found result.
 
 The two-phase structure is what makes obliteration crash-safe. A crash between the two
 phases leaves the fragment in `PayloadObliterating`; on recovery, the obliteration is
@@ -2183,22 +2173,36 @@ bytes are gone, or where the bytes are gone but no metadata records the oblitera
 
 #### 19.6 Implications for revision integrity
 
-Obliterating a fragment does not invalidate the revisions that reference it. The hash in
-each revision's tree still resolves to the same address; the tree still walks;
-verification still produces the right structural results. What changes is what comes
-back when a reader fetches the *bytes*: instead of the original payload, the reader gets
-a typed "obliterated" response.
+Removing file content leaves revision metadata and history intact. Clone and sync attempt the
+remaining available files when an individual file cannot be materialised. They report failed
+attempts and return a nonzero status because the working tree does not fully match the revision.
+This restores the continuation behavior established by UCS-14675; it does not recreate removed
+content, rewrite history, or exclude missing files from tracking. A bare clone can still retrieve
+the retained revision metadata. Missing repository access or required structural metadata remains
+a hard failure and can prevent discovery of the files themselves.
 
-To a downstream consumer this looks like a present-but-unreadable fragment. A diff that
-crosses obliterated content shows "this content was obliterated" rather than producing
-bogus output. A sync that needs the bytes for materialization cannot complete and reports
-the failure cleanly. A clone of a revision whose content has been obliterated still walks
-the tree but stops at the obliterated fragments.
+Before `lore file obliterate` deletes locally or remotely, it checks the content dependencies
+of active branches' latest snapshots and warns about affected branches. The check includes
+children recursively deleted with the requested fragment, including children shared by older
+and current file versions. Both the address and path forms use this check; staging a path's
+deletion does not change the published latest revision.
 
-The integrity of the content-addressed graph is preserved: hashes still match, signatures
-still verify, the revision chain is still cryptographically linked. The only thing
-missing is the bytes that were removed - which is exactly what obliteration is meant to
-do.
+The warning is advisory: administrators can still delete the content, and affected clones and
+syncs can still fail afterward. Inspection reads snapshot metadata and fragment lists without
+walking revision history or downloading ordinary file payloads. It ignores the instance's
+sparse view and follows versioned links at their recorded revisions.
+
+The check has time and work limits and reports when it cannot complete. Remote enumeration
+stops when it encounters more than 10,000 branches, before collecting the rest of the listing. It covers the target
+repository's active branches, not archived branches or every other repository that links into
+it. Offline checks cannot establish remote impact. Branch listing deliberately omits unreadable
+branch metadata and reports a zero latest revision when that pointer cannot be read. The remote
+inspection warns that impact for omitted branches is unknown, and reports unknown impact for
+branches with a zero latest revision because it cannot distinguish an empty branch from a read
+failure. Concurrent pushes can change latest pointers after inspection; absence of a known
+impact warning is not a guarantee of cloneability. Zero-context structural targets report
+unknown impact instead of being classified as unreferenced. Direct storage/admin RPC callers
+do not run this revision-layer check.
 
 #### 19.7 What obliteration cannot do
 

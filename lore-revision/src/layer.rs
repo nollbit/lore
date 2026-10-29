@@ -209,6 +209,9 @@ async fn save_config(
     config_path: impl AsRef<Path>,
     config: &LayerConfig,
 ) -> Result<(), LayerError> {
+    if execution_context().globals().dry_run() {
+        return Ok(());
+    }
     crate::util::config::save(config, config_path)
         .await
         .forward::<LayerError>("Failed to save configuration")
@@ -279,7 +282,7 @@ impl Layer {
         &self,
         repository: Arc<RepositoryContext>,
     ) -> Result<LayerState, LayerError> {
-        let repository = Arc::new(repository.to_layer_context(self.repository).await);
+        let repository = repository.to_layer_context(self.repository).await;
 
         let state_current = State::deserialize(repository.clone(), self.current)
             .await
@@ -315,7 +318,7 @@ pub async fn add(
     let state_staged = state_staged.unwrap_or_else(|| _state_current.clone());
 
     lore_debug!("Resolve repository layer source {source_repository} path {source_path}");
-    let layer_repository = Arc::new(repository.to_layer_context(source_repository).await);
+    let layer_repository = repository.to_layer_context(source_repository).await;
 
     let layer_remote = layer_repository
         .remote()
@@ -358,34 +361,42 @@ pub async fn add(
         .await
         .forward::<LayerError>("Failed getting branch metadata")?;
 
-        lore_debug!("Creating layer repository branch {branch_name} at revision {parent_latest}");
+        // A dry run reports the branch at the revision it would start at, creating nothing on
+        // the remote.
+        if execution_context().globals().dry_run() {
+            parent_latest
+        } else {
+            lore_debug!(
+                "Creating layer repository branch {branch_name} at revision {parent_latest}"
+            );
 
-        let user_id = execution_context().user_id().await;
+            let user_id = execution_context().user_id().await;
 
-        let branch_stack = vec![BranchPoint {
-            branch: default_branch_id,
-            revision: parent_latest,
-        }];
+            let branch_stack = vec![BranchPoint {
+                branch: default_branch_id,
+                revision: parent_latest,
+            }];
 
-        let revision = layer_remote
-            .revision(layer_repository.id)
-            .await
-            .forward::<LayerError>("Not connected")?;
-        let layer_latest = revision
-            .branch_create(
-                current_branch_id,
-                branch_name,
-                branch_category,
-                user_id.as_str(),
-                &branch_stack,
-            )
-            .await
-            .forward::<LayerError>("Failed to create branch in layer repository")?;
+            let revision = layer_remote
+                .revision(layer_repository.id)
+                .await
+                .forward::<LayerError>("Not connected")?;
+            let layer_latest = revision
+                .branch_create(
+                    current_branch_id,
+                    branch_name,
+                    branch_category,
+                    user_id.as_str(),
+                    &branch_stack,
+                )
+                .await
+                .forward::<LayerError>("Failed to create branch in layer repository")?;
 
-        lore_debug!(
-            "Layer repository branch {branch_name} created at latest revision {layer_latest}"
-        );
-        layer_latest
+            lore_debug!(
+                "Layer repository branch {branch_name} created at latest revision {layer_latest}"
+            );
+            layer_latest
+        }
     };
 
     lore_debug!("Find matching revision");
@@ -800,6 +811,34 @@ pub fn target_paths<'a>(layers: impl IntoIterator<Item = &'a Layer>) -> Vec<Stri
         .collect()
 }
 
+/// Where a walk over the parent's tree switches to each layer's staged tree rather than treating
+/// the mount's contents as parent adds: the node the layer's source path names, at the path the
+/// layer is mounted at. A layer whose staged tree holds no such node is left out.
+pub(crate) async fn mounts(layers: &[(Layer, LayerState)]) -> Arc<Vec<state::LayerMountInfo>> {
+    let mut mounts = Vec::with_capacity(layers.len());
+    for (layer, layer_state) in layers {
+        let Ok(source) = layer_state
+            .state_staged
+            .find_node_link(layer_state.repository.clone(), &layer.source_path)
+            .await
+        else {
+            lore_debug!(
+                "Skipping layer mount {} — source path {} not found in layer state",
+                layer.target_path,
+                layer.source_path
+            );
+            continue;
+        };
+        mounts.push(state::LayerMountInfo {
+            target_path: layer.target_path.clone(),
+            repository: layer_state.repository.clone(),
+            state: layer_state.state_staged.clone(),
+            source_node: source.node,
+        });
+    }
+    Arc::new(mounts)
+}
+
 /// For operations that cascade into every configured layer.
 ///
 /// Each context costs its own connection until UCS-19226 lands, so they are
@@ -811,7 +850,7 @@ pub async fn list_with_context(
     futures::future::try_join_all(layers.into_iter().map(|layer| {
         let repository = repository.clone();
         async move {
-            let context = Arc::new(repository.to_layer_context(layer.repository).await);
+            let context = repository.to_layer_context(layer.repository).await;
             Ok((layer, context))
         }
     }))
@@ -842,7 +881,7 @@ pub(crate) async fn list_staged(
         let Some(staged) = layer.staged_revision() else {
             continue;
         };
-        let layer_repository = Arc::new(repository.to_layer_context(layer.repository).await);
+        let layer_repository = repository.to_layer_context(layer.repository).await;
         let staged_state = State::deserialize(layer_repository.clone(), staged)
             .await
             .forward::<LayerError>("Failed to deserialize layer staged state")?;

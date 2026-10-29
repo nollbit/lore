@@ -19,7 +19,6 @@ use crate::link::LinkFlags;
 use crate::link::LoreLinkChangeEventData;
 use crate::lore::Address;
 use crate::lore::BranchId;
-use crate::lore::Hash;
 use crate::lore::execution_context;
 use crate::lore_debug;
 use crate::node::Node;
@@ -197,9 +196,15 @@ pub async fn add(
         (link_revision, current_branch_id)
     };
 
-    let branch_metadata = branch::metadata(link.clone(), link_branch)
-        .await
-        .forward::<LinkError>("Failed getting branch metadata")?;
+    // A dry run does not create a missing link branch, which takes the name of the branch it
+    // is created for in this repository.
+    let branch_metadata = match branch::metadata(link.clone(), link_branch).await {
+        Err(err) if err.is_branch_not_found() && execution_context().globals().dry_run() => {
+            branch::metadata(repository.clone(), link_branch).await
+        }
+        metadata => metadata,
+    }
+    .forward::<LinkError>("Failed getting branch metadata")?;
     let branch_name =
         branch::name(&branch_metadata).forward::<LinkError>("Failed getting branch metadata")?;
 
@@ -416,14 +421,7 @@ pub async fn add(
     // Fold nested link revisions up into the top-level state (no-op if flat).
     link::propagate_link_chain(&chain, token).await?;
 
-    state_staged.set_parent_self(state_current.revision());
-
-    // If staged state is the initial stage based on current state, reset other parent. Otherwise
-    // leave it as is, in case previous staged state was a merge/integrate
-    if state_staged.revision() == state_current.revision() {
-        state_staged.set_parent_other(Hash::default());
-        state_staged.set_metadata_hash(Hash::default());
-    }
+    state_staged.reparent_onto(state_current.revision());
 
     // Serialize the staged state
     let signature = state_staged

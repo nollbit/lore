@@ -16,7 +16,7 @@ bitcode = { workspace = true }
 blake3 = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
-crossbeam = { workspace = true }
+crossbeam-queue = { workspace = true }
 dashmap = { workspace = true }
 diffy = { workspace = true }
 fastcdc = { workspace = true }
@@ -27,7 +27,6 @@ hex = { workspace = true }
 http = { workspace = true }
 infer = { workspace = true }
 jsonwebtoken = { workspace = true }
-keyring = { workspace = true }
 libc = { workspace = true }
 open = "5.3.2"
 opentelemetry = { workspace = true }
@@ -69,9 +68,12 @@ zerocopy = { workspace = true }
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_ProjectedFileSystem", "Win32_Storage_FileSystem", "Win32_System_Diagnostics", "Win32_System_Diagnostics_Debug", "Win32_System_IO", "Win32_Security"] }
 
 [dev-dependencies]
+ctor = { workspace = true }
+keyring-core = { workspace = true }
 lore-base = { workspace = true, features = ["test-util"] }
 lore-revision = { workspace = true, features = ["test-util"] }
-lore-storage = { workspace = true }
+lore-storage = { workspace = true, features = ["test-util"] }
+lore-transport = { workspace = true, features = ["test-util"] }
 serde_json = { workspace = true }
 serde = { workspace = true }
 # `start_paused` for the tests that drive a polling loop on a virtual clock.

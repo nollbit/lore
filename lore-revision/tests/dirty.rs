@@ -1301,6 +1301,80 @@ mod tests {
             .expect("Test task failed");
     }
 
+    /// Staging several files under a removed directory in one call stages a delete of only those
+    /// files, not of the directories they share or the other files in them.
+    #[tokio::test]
+    async fn staging_files_under_a_removed_ancestor_deletes_only_those_files() {
+        let (immutable_store, mutable_store, execution) =
+            test_store_create().await.expect("Failed to create stores");
+        let repository_id = RepositoryId::from(uuid::Uuid::now_v7());
+
+        #[allow(clippy::disallowed_methods)]
+        runtime()
+            .spawn(LORE_CONTEXT.scope(execution.clone(), async move {
+                let fixture =
+                    test_repository_create(immutable_store, mutable_store, repository_id).await;
+                let repository = fixture.repository.clone();
+                std::fs::create_dir_all(fixture.path.join("A/B/M")).expect("Create dir failed");
+                for file in [
+                    "A/B/M/a1.txt",
+                    "A/B/M/a2.txt",
+                    "A/B/M/a3.txt",
+                    "A/other.txt",
+                ] {
+                    test_file_write(&fixture.path.join(file), file.as_bytes());
+                }
+                test_commit_tree(&fixture, "Initial").await;
+
+                std::fs::remove_dir_all(fixture.path.join("A")).expect("Delete failed");
+
+                file::stage::stage(
+                    repository.clone(),
+                    &fixture.write_token,
+                    LoreArray::from_vec(
+                        ["A/B/M/a1.txt", "A/B/M/a2.txt"]
+                            .iter()
+                            .map(|target| {
+                                LoreString::from(
+                                    fixture.path.join(target).to_string_lossy().as_ref(),
+                                )
+                            })
+                            .collect(),
+                    ),
+                    StageOptions::default(),
+                )
+                .await
+                .expect("Stage failed");
+
+                let (_, state_staged, _) =
+                    State::deserialize_current_and_staged(repository.clone())
+                        .await
+                        .expect("Deserialize failed");
+                let state_staged = state_staged.expect("Should have staged state");
+                for (path, deleted) in [
+                    ("A/B/M/a1.txt", true),
+                    ("A/B/M/a2.txt", true),
+                    ("A", false),
+                    ("A/B", false),
+                    ("A/B/M", false),
+                    ("A/B/M/a3.txt", false),
+                    ("A/other.txt", false),
+                ] {
+                    let node = state_staged
+                        .find_node(repository.clone(), path)
+                        .await
+                        .unwrap_or_else(|_| panic!("{path} is committed and stays in the tree"));
+                    assert_eq!(
+                        node.is_staged_delete(),
+                        deleted,
+                        "{path} staged for delete should be {deleted}"
+                    );
+                }
+            }))
+            .await
+            .expect("Test task failed");
+    }
+
     /// The staged tree's children of the root that are named `name`.
     async fn root_children_named(fixture: &TestRepository, name: &str) -> Vec<Node> {
         let repository = fixture.repository.clone();
@@ -3456,31 +3530,6 @@ mod tests {
             .expect("Test task failed");
     }
 
-    /// The children of `parent` in `state` named `name`.
-    async fn children_named(
-        repository: &Arc<lore_revision::repository::RepositoryContext>,
-        state: &Arc<State>,
-        parent: lore_revision::node::NodeID,
-        name: &str,
-    ) -> Vec<lore_revision::node::NodeID> {
-        let name_hash = hash_string(name);
-        let mut named = Vec::new();
-        for child in state
-            .node_children(repository.clone(), parent)
-            .await
-            .expect("Failed to list the children")
-        {
-            let node = state
-                .node(repository.clone(), child)
-                .await
-                .expect("Failed to read a child");
-            if node.name_hash == name_hash {
-                named.push(child);
-            }
-        }
-        named
-    }
-
     fn scan_status_options() -> lore_revision::repository::status::StatusOptions {
         lore_revision::repository::status::StatusOptions {
             staged: false,
@@ -3747,6 +3796,64 @@ mod tests {
                     !holds(&repository, &staged, "added.txt").await,
                     "a walk handed no queue discards once it has drained"
                 );
+            }))
+            .await
+            .expect("Test task failed");
+    }
+
+    /// A status over a provider that holds its state, whose diff is exact, scans without `--scan`,
+    /// persists what it marks, and emits the summary of its scan.
+    #[tokio::test]
+    async fn a_status_over_an_exact_diff_persists_its_marks_and_emits_its_summary() {
+        #[allow(clippy::disallowed_methods)]
+        runtime()
+            .spawn(LORE_CONTEXT.scope(setup_test_execution(), async move {
+                let (repository, tempdir) = committed_repository("", &[]).await;
+                test_file_write(tempdir.path().join("added.txt").as_path(), b"added");
+                let (exact, _) = test_holding_context(&repository);
+                let adds = Arc::new(std::sync::Mutex::new(None));
+                let captured = adds.clone();
+                let execution = Arc::new(
+                    lore_revision::interface::ExecutionContext::new_client_with_user_id(
+                        lore_revision::interface::LoreGlobalArgs::default(),
+                        lore_revision::relay::EventDispatcher::new(Some(Box::new(move |event| {
+                            if let lore_revision::event::LoreEvent::RepositoryStatusSummary(data) =
+                                event
+                            {
+                                *captured.lock().expect("summary") = Some(data.adds);
+                            }
+                        }))),
+                        "test-user".to_string(),
+                    ),
+                );
+
+                LORE_CONTEXT
+                    .scope(
+                        execution.clone(),
+                        lore_revision::repository::status::status_boxed(
+                            exact.clone(),
+                            None,
+                            lore_revision::repository::status::StatusOptions {
+                                scan: false,
+                                ..scan_status_options()
+                            },
+                        ),
+                    )
+                    .await
+                    .expect("Status failed");
+                execution.dispatcher.drain().await;
+                assert_eq!(
+                    *adds.lock().expect("summary"),
+                    Some(1),
+                    "The status emitted no summary of its scan"
+                );
+
+                let (_, staged, _) = State::deserialize_current_and_staged(exact.clone())
+                    .await
+                    .expect("Deserialize failed");
+                let staged = staged.expect("The status persisted no marks");
+                let added = children_named(&exact, &staged, ROOT_NODE, "added.txt").await;
+                assert_eq!(added.len(), 1, "The status marked no add");
             }))
             .await
             .expect("Test task failed");

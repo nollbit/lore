@@ -1,12 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Epic Games, Inc.
 // SPDX-License-Identifier: MIT
+use std::sync::Arc;
 use std::time::Duration;
 
 use lore_base::error::*;
 use lore_base::types::*;
 use lore_error_set::ext::ResultExt;
+use lore_transport::auth::AuthMode;
 use lore_transport::connection::*;
 use lore_transport::error::ProtocolError;
+use lore_transport::session::StorageSession;
 use lore_transport::types::*;
 
 /// A long-lived process rotates the credentials it supplies. The connection
@@ -22,23 +25,33 @@ use lore_transport::types::*;
 #[test]
 fn the_no_identity_fallback_does_not_cross_credential_modes() {
     let remote = "lores://mode-isolation.test.invalid";
+    let auto = AuthMode::Auto;
     let stored = (
         remote.to_string(),
         "alice".to_string(),
         false,
         String::new(),
+        auto,
     );
-    let supplied = (remote.to_string(), "alice".to_string(), true, String::new());
+    let supplied = (
+        remote.to_string(),
+        "alice".to_string(),
+        true,
+        String::new(),
+        auto,
+    );
 
-    assert!(matches_url_mode_and_store(&stored, remote, false, ""));
-    assert!(matches_url_mode_and_store(&supplied, remote, true, ""));
+    assert!(matches_url_mode_and_store(&stored, remote, false, "", auto));
+    assert!(matches_url_mode_and_store(
+        &supplied, remote, true, "", auto
+    ));
 
     assert!(
-        !matches_url_mode_and_store(&supplied, remote, false, ""),
+        !matches_url_mode_and_store(&supplied, remote, false, "", auto),
         "a store-mode call must not be given a supplied-credential connection"
     );
     assert!(
-        !matches_url_mode_and_store(&stored, remote, true, ""),
+        !matches_url_mode_and_store(&stored, remote, true, "", auto),
         "a supplied-credential call must not be given a store-mode connection"
     );
 
@@ -46,7 +59,69 @@ fn the_no_identity_fallback_does_not_cross_credential_modes() {
         &stored,
         "lores://elsewhere.invalid",
         false,
-        ""
+        "",
+        auto
+    ));
+}
+
+/// The lookup runs before the environment is fetched, so which path a mode
+/// resolves to is unknown at that point. A call in one auth mode must not be
+/// handed a connection opened in another: an `oidc` call after an `auto` one
+/// to the same remote would otherwise run over the gRPC path the first call
+/// selected, and the inverse.
+#[test]
+fn the_no_identity_fallback_does_not_cross_auth_modes() {
+    let remote = "lores://auth-mode-isolation.test.invalid";
+    let opened_auto = (
+        remote.to_string(),
+        "alice".to_string(),
+        false,
+        String::new(),
+        AuthMode::Auto,
+    );
+    let opened_oidc = (
+        remote.to_string(),
+        "alice".to_string(),
+        false,
+        String::new(),
+        AuthMode::Oidc,
+    );
+
+    assert!(matches_url_mode_and_store(
+        &opened_auto,
+        remote,
+        false,
+        "",
+        AuthMode::Auto
+    ));
+    assert!(matches_url_mode_and_store(
+        &opened_oidc,
+        remote,
+        false,
+        "",
+        AuthMode::Oidc
+    ));
+
+    assert!(!matches_url_mode_and_store(
+        &opened_auto,
+        remote,
+        false,
+        "",
+        AuthMode::Oidc
+    ));
+    assert!(!matches_url_mode_and_store(
+        &opened_auto,
+        remote,
+        false,
+        "",
+        AuthMode::Grpc
+    ));
+    assert!(!matches_url_mode_and_store(
+        &opened_oidc,
+        remote,
+        false,
+        "",
+        AuthMode::Auto
     ));
 }
 
@@ -61,16 +136,18 @@ fn the_no_identity_fallback_does_not_cross_token_stores() {
         "alice".to_string(),
         false,
         "/home/alice/tokens".to_string(),
+        AuthMode::Auto,
     );
 
     assert!(matches_url_mode_and_store(
         &alices,
         remote,
         false,
-        "/home/alice/tokens"
+        "/home/alice/tokens",
+        AuthMode::Auto
     ));
     assert!(
-        !matches_url_mode_and_store(&alices, remote, false, "/home/bob/tokens"),
+        !matches_url_mode_and_store(&alices, remote, false, "/home/bob/tokens", AuthMode::Auto),
         "a call reading another store must not be given the connection alice's opened"
     );
 }
@@ -267,6 +344,301 @@ mod refusal_is_final {
     }
 }
 
+/// The server names the endpoint of each service, and each connection takes its own URL's
+/// scheme. A remote whose scheme authenticates the server must not hand a service to an endpoint
+/// that does not, or the user's choice of scheme protects only the first connection.
+mod check_advertised_endpoints {
+    use std::sync::Weak;
+
+    use lore_transport::auth::AuthEndpoint;
+    use lore_transport::traits::Admin;
+    use lore_transport::traits::Environment;
+    use lore_transport::traits::Lock;
+    use lore_transport::traits::Protocol;
+    use lore_transport::traits::Repository;
+    use lore_transport::traits::Revision;
+    use lore_transport::traits::Storage;
+    use url::Url;
+
+    use super::*;
+
+    type Advertise = fn(&mut Endpoint, String);
+
+    /// Every service the client connects to at an advertised URL.
+    const SERVICES: [(&str, Advertise); 5] = [
+        ("storage", |endpoint, url| {
+            endpoint.storage_url = Some(url);
+        }),
+        ("revision", |endpoint, url| {
+            endpoint.revision_url = Some(url);
+        }),
+        ("lock", |endpoint, url| {
+            endpoint.lock_url = Some(url);
+        }),
+        ("repository", |endpoint, url| {
+            endpoint.repository_url = Some(url);
+        }),
+        ("notification", |endpoint, url| {
+            endpoint.notification_url = Some(url);
+        }),
+    ];
+
+    const SECURE_REMOTES: [&str; 3] = [
+        "lores://remote.invalid:41337",
+        "urcs://remote.invalid:41337",
+        "grpcs://remote.invalid:41337",
+    ];
+
+    fn check_endpoint(remote: &str, endpoint: Endpoint) -> Result<(), ProtocolError> {
+        let environment = EnvironmentConfig {
+            endpoint: Some(endpoint),
+            ..Default::default()
+        };
+        let remote = Url::parse(remote).expect("the test remote is a valid URL");
+        lore_transport::connection::check_advertised_endpoints(&remote, &environment)
+    }
+
+    fn check(remote: &str, advertise: Advertise, url: &str) -> Result<(), ProtocolError> {
+        let mut endpoint = Endpoint::default();
+        advertise(&mut endpoint, url.to_string());
+        check_endpoint(remote, endpoint)
+    }
+
+    #[test]
+    fn a_secure_remote_refuses_an_endpoint_that_skips_server_authentication() {
+        for (remote, advertised) in [
+            (
+                "lores://remote.invalid:41337",
+                "lore://service.invalid:41337",
+            ),
+            ("urcs://remote.invalid:41337", "urc://service.invalid:41337"),
+            (
+                "grpcs://remote.invalid:41337",
+                "grpc://service.invalid:41337",
+            ),
+            (
+                "lores://remote.invalid:41337",
+                "quic://service.invalid:7000",
+            ),
+            ("lores://remote.invalid:41337", "not a url"),
+        ] {
+            for (service, advertise) in SERVICES {
+                let err = check(remote, advertise, advertised).expect_err(service);
+                assert!(
+                    err.is_not_supported(),
+                    "{remote} advertising {service} at {advertised}: {err:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_secure_remote_refuses_an_insecure_endpoint_among_secure_ones() {
+        for (insecure, _) in SERVICES {
+            let mut endpoint = Endpoint::default();
+            for (service, advertise) in SERVICES {
+                let scheme = if service == insecure { "lore" } else { "lores" };
+                advertise(&mut endpoint, format!("{scheme}://service.invalid:41337"));
+            }
+            let err = check_endpoint("lores://remote.invalid:41337", endpoint).expect_err(insecure);
+            assert!(err.is_not_supported(), "{insecure}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn a_secure_remote_accepts_an_endpoint_that_authenticates_the_server() {
+        for remote in SECURE_REMOTES {
+            for advertised in [
+                "lores://service.invalid:41337",
+                "urcs://service.invalid:41337",
+                "grpcs://service.invalid:41337",
+                "https://service.invalid",
+            ] {
+                for (service, advertise) in SERVICES {
+                    if let Err(err) = check(remote, advertise, advertised) {
+                        panic!("{remote} advertising {service} at {advertised}: {err:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The auth and user directory endpoints follow a scheme policy of their own.
+    #[test]
+    fn a_secure_remote_accepts_auth_and_user_endpoints_of_any_scheme() {
+        check_endpoint(
+            "lores://remote.invalid:41337",
+            Endpoint {
+                auth_url: Some("ucs-auth://auth.invalid".into()),
+                user_url: Some("ucs-auth://directory.invalid".into()),
+                ..Default::default()
+            },
+        )
+        .expect("auth_url and user_url are not service endpoints");
+    }
+
+    /// An empty override falls back to the remote, as no override does.
+    #[test]
+    fn a_secure_remote_accepts_its_own_endpoints() {
+        let remote = Url::parse("lores://remote.invalid:41337").expect("valid URL");
+        for environment in [
+            EnvironmentConfig::default(),
+            EnvironmentConfig {
+                endpoint: Some(Endpoint::default()),
+                ..Default::default()
+            },
+        ] {
+            lore_transport::connection::check_advertised_endpoints(&remote, &environment)
+                .expect("no override leaves every service on the remote");
+        }
+        for (service, advertise) in SERVICES {
+            check("lores://remote.invalid:41337", advertise, "").expect(service);
+        }
+    }
+
+    /// A remote that skips server authentication has no guarantee to lose.
+    #[test]
+    fn an_insecure_remote_accepts_any_endpoint() {
+        for advertised in [
+            "lore://service.invalid:41337",
+            "lores://service.invalid:41337",
+        ] {
+            for (service, advertise) in SERVICES {
+                check("lore://remote.invalid:41337", advertise, advertised).expect(service);
+            }
+        }
+    }
+
+    /// A protocol whose server advertises the storage endpoint it holds, and whose services all
+    /// fail to connect.
+    struct AdvertisingProtocol(&'static str);
+
+    #[async_trait::async_trait]
+    impl Environment for AdvertisingProtocol {
+        async fn get(&self) -> Result<EnvironmentConfig, ProtocolError> {
+            Ok(EnvironmentConfig {
+                endpoint: Some(Endpoint {
+                    storage_url: Some(self.0.to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Protocol for AdvertisingProtocol {
+        async fn storage(
+            &self,
+            _: Weak<Connection>,
+            _: &str,
+            _: &AuthEndpoint,
+            _: &str,
+            _: Partition,
+            _: usize,
+            _: &Arc<SuppliedCredentials>,
+        ) -> Result<Arc<dyn Storage>, ProtocolError> {
+            Err(ProtocolError::from(Disconnected))
+        }
+
+        async fn revision(
+            &self,
+            _: Weak<Connection>,
+            _: &str,
+            _: &AuthEndpoint,
+            _: &str,
+            _: RepositoryId,
+            _: &Arc<SuppliedCredentials>,
+        ) -> Result<Arc<dyn Revision>, ProtocolError> {
+            Err(ProtocolError::from(Disconnected))
+        }
+
+        async fn repository(
+            &self,
+            _: Weak<Connection>,
+            _: &str,
+            _: &AuthEndpoint,
+            _: &str,
+            _: &Arc<SuppliedCredentials>,
+        ) -> Result<Arc<dyn Repository>, ProtocolError> {
+            Err(ProtocolError::from(Disconnected))
+        }
+
+        async fn admin(
+            &self,
+            _: Weak<Connection>,
+            _: &str,
+            _: &AuthEndpoint,
+            _: &str,
+            _: RepositoryId,
+            _: &Arc<SuppliedCredentials>,
+        ) -> Result<Arc<dyn Admin>, ProtocolError> {
+            Err(ProtocolError::from(Disconnected))
+        }
+
+        async fn lock(
+            &self,
+            _: Weak<Connection>,
+            _: &str,
+            _: &AuthEndpoint,
+            _: &str,
+            _: RepositoryId,
+            _: &Arc<SuppliedCredentials>,
+        ) -> Result<Arc<dyn Lock>, ProtocolError> {
+            Err(ProtocolError::from(Disconnected))
+        }
+
+        async fn environment(
+            &self,
+            _: Weak<Connection>,
+            _: &str,
+        ) -> Result<Arc<dyn Environment>, ProtocolError> {
+            Ok(Arc::new(AdvertisingProtocol(self.0)))
+        }
+    }
+
+    /// Both schemes end in `s`, so both remotes authenticate the server.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connect_refuses_a_remote_advertising_an_endpoint_that_skips_server_authentication() {
+        add(
+            "refuses",
+            Arc::new(AdvertisingProtocol("lore://service.invalid:41337")),
+        )
+        .expect("the scheme is not registered yet");
+        add(
+            "accepts",
+            Arc::new(AdvertisingProtocol("lores://service.invalid:41337")),
+        )
+        .expect("the scheme is not registered yet");
+
+        let refused = connect(
+            "refuses://remote.invalid:41337",
+            "",
+            RepositoryId::default(),
+            1,
+            "",
+            "",
+            AuthMode::Auto,
+        )
+        .await
+        .err()
+        .expect("an endpoint that skips server authentication is refused");
+        assert!(refused.is_not_supported(), "{refused:?}");
+
+        connect(
+            "accepts://remote.invalid:41337",
+            "",
+            RepositoryId::default(),
+            1,
+            "",
+            "",
+            AuthMode::Auto,
+        )
+        .await
+        .expect("an endpoint that authenticates the server is accepted");
+    }
+}
+
 /// The refusal is remembered so the round trip is paid once, and retired by the success that
 /// proves it no longer holds.
 #[test]
@@ -283,6 +655,211 @@ fn a_refusal_lasts_until_a_session_start_succeeds() {
     connector.mark_partition_authorized(partition);
     assert!(!connector.is_partition_refused(partition));
     assert!(connector.is_partition_authorized(partition));
+}
+
+/// A command's session takes turns over every storage connection, so bulk reads through it,
+/// such as a cache fill, are not held to the rate of the connection a single pick lands on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_spreads_requests_over_every_storage_connection() {
+    use crate::quic::storage_service::test_server::TestStorageServer;
+    use crate::quic::storage_service::test_server::test_address;
+    use crate::quic::storage_service::test_server::test_partition;
+
+    let server = TestStorageServer::start();
+    let connection = Connection::detached(server.connect(4).await);
+    let session = connection
+        .session(test_partition(), "correlation")
+        .await
+        .expect("session over the detached storage");
+
+    for index in 0..400 {
+        session.get(&test_address(index)).await.expect("fetch");
+    }
+
+    assert_eq!(server.gets_per_connection(), vec![100, 100, 100, 100]);
+}
+
+/// Calls under one correlation id share the pool the connection pins for a partition, so its
+/// sessions start once however many calls take it. A call under another correlation id pins a
+/// pool of its own in its place, and the sessions of the one it replaces stop.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pinned_pool_serves_its_correlation_id_until_another_replaces_it() {
+    use crate::quic::storage_service::test_server::TestStorageServer;
+    use crate::quic::storage_service::test_server::test_partition;
+    use crate::quic::storage_service::test_server::wait_until;
+
+    let server = TestStorageServer::start();
+    let connection = Connection::detached(server.connect(2).await);
+    for _ in 0..3 {
+        connection
+            .session_pool(test_partition(), "first")
+            .await
+            .expect("a pool");
+    }
+    assert_eq!(server.started_sessions_per_connection(), vec![1, 1]);
+
+    connection
+        .session_pool(test_partition(), "second")
+        .await
+        .expect("a pool");
+
+    assert_eq!(server.started_sessions_per_connection(), vec![2, 2]);
+    wait_until(
+        || server.live_sessions_per_connection() == [1, 1],
+        "the replaced pool's server sessions were left open",
+    )
+    .await;
+}
+
+/// A call under another correlation id replaces the pool pinned for its own partition alone: the
+/// pool pinned for another partition keeps serving its correlation id, and its sessions stay open.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_replaced_pool_leaves_another_partitions_pool_pinned() {
+    use crate::quic::storage_service::test_server::TestStorageServer;
+    use crate::quic::storage_service::test_server::test_partition;
+    use crate::quic::storage_service::test_server::wait_until;
+
+    let server = TestStorageServer::start();
+    let connection = Connection::detached(server.connect(2).await);
+    let other = Partition::from([0x7au8; 16]);
+    for (partition, correlation_id) in [
+        (other, "first"),
+        (test_partition(), "first"),
+        (test_partition(), "second"),
+        (other, "first"),
+    ] {
+        connection
+            .session_pool(partition, correlation_id)
+            .await
+            .expect("a pool");
+    }
+
+    assert_eq!(server.started_sessions_per_connection(), vec![3, 3]);
+    wait_until(
+        || server.live_sessions_per_connection() == [2, 2],
+        "the replaced pool's server sessions were left open",
+    )
+    .await;
+}
+
+/// An unpinned pool's server-side sessions stop once its last holder drops it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unpinned_pool_stops_its_server_sessions_when_dropped() {
+    use crate::quic::storage_service::test_server::TestStorageServer;
+    use crate::quic::storage_service::test_server::test_partition;
+    use crate::quic::storage_service::test_server::wait_until;
+
+    let server = TestStorageServer::start();
+    let connection = Connection::detached(server.connect(2).await);
+    let pool = connection
+        .unpinned_session_pool(test_partition(), "correlation")
+        .await
+        .expect("an unpinned pool");
+    assert_eq!(server.live_sessions_per_connection(), vec![1, 1]);
+
+    drop(pool);
+
+    wait_until(
+        || server.live_sessions_per_connection() == [0, 0],
+        "the unpinned pool's server sessions were left open",
+    )
+    .await;
+}
+
+/// The pool that replaces an invalidated one serves on every connection while the invalidated pool
+/// is still held.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_invalidated_pools_replacement_serves_on_every_connection() {
+    use crate::quic::storage_service::test_server::TestStorageServer;
+    use crate::quic::storage_service::test_server::test_address;
+    use crate::quic::storage_service::test_server::test_partition;
+
+    let server = TestStorageServer::start();
+    let connection = Connection::detached(server.connect(2).await);
+    let stale = connection
+        .session(test_partition(), "correlation")
+        .await
+        .expect("session over the detached storage");
+    stale.get(&test_address(0)).await.expect("fetch");
+
+    stale.invalidate().await;
+    let fresh = connection
+        .session(test_partition(), "correlation")
+        .await
+        .expect("a fresh session");
+
+    for index in 1..3 {
+        fresh
+            .get(&test_address(index))
+            .await
+            .expect("the fresh pool serves");
+    }
+    let gets = server.gets_per_connection();
+    assert!(
+        gets.iter().all(|&served| served > 0),
+        "a connection served nothing: {gets:?}"
+    );
+    drop(stale);
+}
+
+/// Invalidating a lazy session marks the pool it resolved to stale, so the next resolution starts
+/// a new pool even while another holder keeps the old one and its session ids.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_invalidated_pool_is_not_handed_out_again() {
+    use crate::quic::storage_service::test_server::TestStorageServer;
+    use crate::quic::storage_service::test_server::test_address;
+    use crate::quic::storage_service::test_server::test_partition;
+
+    let server = TestStorageServer::start();
+    let connection = Connection::detached(server.connect(2).await);
+    let resolving = connection.clone();
+    let lazy = StorageSession::pending(move || {
+        let connection = resolving.clone();
+        async move { connection.session(test_partition(), "correlation").await }
+    });
+    lazy.get(&test_address(0)).await.expect("fetch");
+    let held = connection
+        .session_pool(test_partition(), "correlation")
+        .await
+        .expect("the pool the lazy session resolved to");
+
+    lazy.invalidate().await;
+    let after = connection
+        .session_pool(test_partition(), "correlation")
+        .await
+        .expect("a pool after the invalidation");
+
+    assert!(held.is_stale());
+    assert!(!Arc::ptr_eq(&held, &after), "a fresh pool");
+}
+
+/// A cache get cap above what a semaphore holds is clamped to it, and a cap of zero sets
+/// none.
+#[test]
+fn cache_get_permits_clamp_to_what_a_semaphore_holds() {
+    let permits = Connection::detached(Vec::new())
+        .cache_get_permits(usize::MAX)
+        .expect("a cap");
+    assert_eq!(
+        permits.available_permits(),
+        tokio::sync::Semaphore::MAX_PERMITS
+    );
+    assert!(
+        Connection::detached(Vec::new())
+            .cache_get_permits(0)
+            .is_none()
+    );
+}
+
+/// The first call fixes a connection's cache get permits; a later call with another cap
+/// answers the same ones.
+#[test]
+fn cache_get_permits_are_fixed_by_the_first_call() {
+    let connection = Connection::detached(Vec::new());
+    let first = connection.cache_get_permits(4).expect("a cap");
+    let later = connection.cache_get_permits(8).expect("a cap");
+    assert!(Arc::ptr_eq(&first, &later));
+    assert_eq!(later.available_permits(), 4);
 }
 
 #[test]

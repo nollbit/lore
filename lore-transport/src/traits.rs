@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use lore_base::types::*;
 
+use crate::auth::AuthEndpoint;
 use crate::connection::Connection;
 use crate::connection::SuppliedCredentials;
 use crate::error::ProtocolError;
@@ -21,7 +22,7 @@ pub trait Protocol: Send + Sync {
         &self,
         connection: Weak<Connection>,
         remote_url: &str,
-        auth_url: &str,
+        auth_endpoint: &AuthEndpoint,
         identity: &str,
         partition: Partition,
         index: usize,
@@ -34,7 +35,7 @@ pub trait Protocol: Send + Sync {
         &self,
         connection: Weak<Connection>,
         remote_url: &str,
-        auth_url: &str,
+        auth_endpoint: &AuthEndpoint,
         identity: &str,
         repository: RepositoryId,
         credentials: &Arc<SuppliedCredentials>,
@@ -45,7 +46,7 @@ pub trait Protocol: Send + Sync {
         &self,
         connection: Weak<Connection>,
         remote_url: &str,
-        auth_url: &str,
+        auth_endpoint: &AuthEndpoint,
         identity: &str,
         credentials: &Arc<SuppliedCredentials>,
     ) -> Result<Arc<dyn Repository>, ProtocolError>;
@@ -56,7 +57,7 @@ pub trait Protocol: Send + Sync {
         &self,
         connection: Weak<Connection>,
         remote_url: &str,
-        auth_url: &str,
+        auth_endpoint: &AuthEndpoint,
         identity: &str,
         repository: RepositoryId,
         credentials: &Arc<SuppliedCredentials>,
@@ -68,7 +69,7 @@ pub trait Protocol: Send + Sync {
         &self,
         connection: Weak<Connection>,
         remote_url: &str,
-        auth_url: &str,
+        auth_endpoint: &AuthEndpoint,
         identity: &str,
         repository: RepositoryId,
         credentials: &Arc<SuppliedCredentials>,
@@ -285,6 +286,17 @@ pub trait Revision: Send + Sync {
     /// List all branches
     async fn branch_list(&self) -> Result<BranchListResponse, ProtocolError>;
 
+    /// List at most `limit` branches. `None` means enumeration exceeded the limit.
+    /// Implementations must stop consuming the stream when the limit is exceeded.
+    async fn branch_list_bounded(
+        &self,
+        _limit: usize,
+    ) -> Result<Option<BranchListResponse>, ProtocolError> {
+        Err(ProtocolError::from(lore_base::error::NotSupported {
+            operation: "bounded branch listing".to_string(),
+        }))
+    }
+
     async fn revision_list(
         &self,
         signature: RevisionListStart,
@@ -424,13 +436,38 @@ pub trait Authentication: Send + Sync {
         correlation_id: &str,
     ) -> Result<AuthenticationToken, ProtocolError>;
 
+    /// Obtains an authentication token for a confidential client registered with
+    /// the auth backend, which authenticates with its own ID and secret.
+    async fn authenticate_client(
+        &self,
+        auth_url: &str,
+        client_id: &str,
+        client_secret: &str,
+        correlation_id: &str,
+    ) -> Result<AuthenticationToken, ProtocolError>;
+
     /// Refreshes the authentication token using a one-time-use refresh token.
+    ///
+    /// Fails with [`Disconnected`](lore_base::error::Disconnected) only when the refresh token
+    /// cannot have reached the backend, so the caller may present it again. After any other
+    /// failure the backend may have consumed it.
     async fn refresh_authentication(
         &self,
         auth_url: &str,
         refresh_token: &str,
         correlation_id: &str,
     ) -> Result<AuthenticationToken, ProtocolError>;
+
+    /// Revokes the refresh token of a login at the auth backend.
+    ///
+    /// Fails with [`NotSupported`](lore_base::error::NotSupported) when the backend offers no
+    /// revocation.
+    async fn revoke_refresh_token(
+        &self,
+        auth_url: &str,
+        refresh_token: &str,
+        correlation_id: &str,
+    ) -> Result<(), ProtocolError>;
 
     /// Exchanges an authentication token for an authorization token scoped
     /// to the given repository.

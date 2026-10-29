@@ -77,15 +77,6 @@ impl EnvironmentConfig {
             fallback,
         )
     }
-
-    /// User directory endpoint: resolves user IDs to display names and back.
-    /// Falls back to `auth_url` if empty.
-    pub fn user_url<'a>(&'a self, fallback: &'a str) -> &'a str {
-        service_url_or(
-            self.endpoint.as_ref().and_then(|e| e.user_url.as_deref()),
-            fallback,
-        )
-    }
 }
 
 fn service_url_or<'a>(override_url: Option<&'a str>, fallback: &'a str) -> &'a str {
@@ -128,20 +119,6 @@ pub struct Oidc {
     pub scope_template: Option<String>,
     /// The issuer of the RFC 8693 token-exchange endpoint that mints partition-scoped tokens.
     pub token_exchange_issuer: Option<String>,
-    pub identity_claim: Option<String>,
-}
-
-impl Oidc {
-    pub const DEFAULT_IDENTITY_CLAIM: &'static str = "sub";
-
-    /// The claim recorded as the user identity: the advertised one, or `sub` when the server
-    /// names none.
-    pub fn identity_claim(&self) -> &str {
-        match self.identity_claim.as_deref() {
-            Some(claim) if !claim.is_empty() => claim,
-            _ => Self::DEFAULT_IDENTITY_CLAIM,
-        }
-    }
 }
 
 /// A compression mode as it arrives from a server, held as the number it was sent as: the codec
@@ -202,6 +179,20 @@ pub struct RevisionListResponse {
     pub items: Vec<RevisionItem>,
     pub next_revision: Hash,
     pub previous_revision: Hash,
+}
+
+impl RevisionListResponse {
+    /// The items from the revision `anchor` down to the oldest in the page.
+    ///
+    /// A page holds the anchor it was asked for, but not necessarily first: a page aligned on
+    /// a wider boundary also holds revisions newer than the anchor, which are not its
+    /// ancestors. Empty when the page does not hold `anchor`.
+    pub fn items_from(&self, anchor: Hash) -> &[RevisionItem] {
+        self.items
+            .iter()
+            .position(|item| item.signature == anchor)
+            .map_or(&[], |first| &self.items[first..])
+    }
 }
 
 #[derive(Debug)]

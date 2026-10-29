@@ -19,6 +19,7 @@ use lore_credential::domain_from_url_str_or_url;
 use lore_error_set::prelude::*;
 use thiserror::Error;
 
+use crate::auth::AuthEndpoint;
 use crate::connection::Connection;
 use crate::connection::SuppliedCredentials;
 use crate::error::ProtocolError;
@@ -87,6 +88,11 @@ pub enum QuicClientError {
     NotFound,
     #[error("Oversized fragment rejected by server")]
     Oversized,
+    /// The command's session was issued on an earlier connection than the one it would be written
+    /// to, which knows another session or none by its id, or on no connection. Raised by the
+    /// client, never the server.
+    #[error("Session not issued on this connection")]
+    StaleSession,
 }
 
 #[derive(Debug)]
@@ -95,7 +101,7 @@ pub struct UnknownCommand(pub QuicOpCode);
 pub async fn storage(
     connection: Weak<Connection>,
     remote_url: &str,
-    auth_url: &str,
+    auth_endpoint: &AuthEndpoint,
     identity: &str,
     partition: Partition,
     credentials: &Arc<SuppliedCredentials>,
@@ -107,7 +113,7 @@ pub async fn storage(
         connection,
         remote_url,
         remote_domain,
-        auth_url,
+        auth_endpoint,
         identity,
         partition,
         credentials,
@@ -116,5 +122,5 @@ pub async fn storage(
     .await
     .forward_with::<ProtocolError, _>(|| format!("connecting to {remote_url}"))?;
 
-    Ok(Arc::new(storage))
+    Ok(storage)
 }

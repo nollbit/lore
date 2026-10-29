@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 use lore_base::types::RepositoryId;
 use lore_credential::token_store;
-use lore_transport::auth::authentication;
-use lore_transport::auth::exchange::load_authentication_token;
+use lore_transport::auth::AuthEndpoint;
+use lore_transport::auth::exchange::auth_exchange;
 use lore_transport::error::ProtocolError;
 use lore_transport::traits::Authentication;
 use lore_transport::types::*;
@@ -39,6 +39,15 @@ impl Authentication for Provider {
     ) -> Result<AuthenticationToken, ProtocolError> {
         unreachable!()
     }
+    async fn authenticate_client(
+        &self,
+        _auth_url: &str,
+        _client_id: &str,
+        _client_secret: &str,
+        _correlation_id: &str,
+    ) -> Result<AuthenticationToken, ProtocolError> {
+        unreachable!()
+    }
     async fn refresh_authentication(
         &self,
         _auth_url: &str,
@@ -62,6 +71,14 @@ impl Authentication for Provider {
             refresh_token: Some("refresh-two".into()),
             scope: None,
         })
+    }
+    async fn revoke_refresh_token(
+        &self,
+        _auth_url: &str,
+        _refresh_token: &str,
+        _correlation_id: &str,
+    ) -> Result<(), ProtocolError> {
+        unreachable!()
     }
     async fn exchange_for_repository(
         &self,
@@ -89,33 +106,30 @@ async fn refresh_worker() {
         return;
     };
     if mode == "seed" {
-        let _guard = token_store::lock_refresh().await.unwrap();
-        token_store::store_user_credentials(
+        token_store::store_user_token_and_refresh_token(
             URL,
             "alice",
             EXPIRED,
-            Some("refresh-one"),
             vec!["example.com".into()],
+            Some("refresh-one"),
+            None,
         )
         .await
         .unwrap();
         return;
     }
-    authentication::add("refresh-test", std::sync::Arc::new(Provider)).unwrap();
-    let token = load_authentication_token(
-        URL,
+    let endpoint = AuthEndpoint::new(URL.to_string(), std::sync::Arc::new(Provider));
+    let (token, _, identity) = auth_exchange(
+        &endpoint,
+        "example.com",
         "alice",
-        token_store::tokens_only_for_recipient_domain("example.com".into()),
+        RepositoryId::default(),
         "",
         "",
     )
-    .await
-    .unwrap();
+    .await;
+    assert_eq!(identity, "alice");
     assert_eq!(token, VALID);
-    assert_eq!(
-        token_store::load_refresh_token(URL, "alice").await.unwrap(),
-        "refresh-two"
-    );
 }
 
 #[test]

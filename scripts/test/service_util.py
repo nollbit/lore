@@ -1,9 +1,12 @@
 # SPDX-FileCopyrightText: 2026 Epic Games, Inc.
 # SPDX-License-Identifier: MIT
+import contextlib
 import logging
 import os
 import platform
 import subprocess
+import sys
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +59,8 @@ LORE_TEST_SHARED_SERVICE_VAR = "LORE_TEST_SHARED_SERVICE"
 #
 # `lore service run` prints this once it has bound its socket.
 LORE_SERVICE_LISTENING_MESSAGE = "Lore service listening"
+# `lore service run` exits with this when another service has claimed the socket.
+LORE_SERVICE_CLAIM_REFUSED_MESSAGE = "Another Lore service has claimed the socket"
 # `lore service stop` prints this when there was no service to stop.
 LORE_NO_SERVICE_MESSAGE = "No Lore service is running"
 # `lore service start` prints this once a service is reachable.
@@ -70,6 +75,38 @@ LORE_SERVICE_STATUS_LABELS = ("Executable:", "Uptime:", "Connections:", "SWFS mo
 
 def service_supported():
     return platform.system() in ("Windows", "Linux", "Darwin")
+
+
+def service_claim_path(socket_name: str) -> Path:
+    """The lock file a service claims `socket_name` with, beside the socket.
+    Paired with `uds_sock_dir` in `lore/src/remote/network/unix.rs` and
+    `uds_sock_path` in `lore/src/remote/network/windows.rs`."""
+    if sys.platform == "win32":
+        return _windows_temp_path() / f"{socket_name}.lock"
+    base = os.environ.get("XDG_RUNTIME_DIR") or os.environ.get("TMPDIR") or "/tmp"
+    return Path(base) / f"lore-{os.getuid()}" / f"{socket_name}.lock"
+
+
+def _windows_temp_path() -> Path:
+    """The directory `GetTempPathW` names, where the Windows service socket
+    lies. Asked of Windows rather than read from the environment, whose
+    variables it consults in an order of its own."""
+    import ctypes
+
+    length = ctypes.windll.kernel32.GetTempPathW(0, None)
+    buffer = ctypes.create_unicode_buffer(length)
+    ctypes.windll.kernel32.GetTempPathW(length, buffer)
+    return Path(buffer.value)
+
+
+def remove_service_claim(socket_name: str):
+    """Removes the lock file a service leaves beside the socket when it exits.
+
+    Left in place on Windows while a service still holds it, which cannot
+    delete a file another process has open: the lock outlives that service as
+    it would on Unix, and the run carries on."""
+    with contextlib.suppress(PermissionError):
+        service_claim_path(socket_name).unlink(missing_ok=True)
 
 
 def stop_lore_service(lore_executable_path: str, global_dir_name: str) -> str:

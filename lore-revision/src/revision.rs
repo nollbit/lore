@@ -1063,13 +1063,20 @@ async fn find_last_modified_revision(
     Ok((last_modified_revision, last_modified_revision_number))
 }
 
+/// Finds the last revision of `source_branch` that the target branch merged the file of `change`
+/// from, walking the file's history back from the target side of `change` to the branch point.
+///
+/// Each step reads the earlier revision's history at the node ID the history records for the file
+/// there, as a revision need not number the file as its first parent does. The walk ends at a
+/// revision that [adds the file without a merge](added_without_merge), the start revision included.
+#[lore_macro::test_pub]
 async fn find_last_merged_revision(
     change: &NodeChange,
     source_branch: BranchId,
     target_branch: BranchId,
     state_branch_point: Arc<State>,
 ) -> Result<Option<(Hash, u64)>, StateError> {
-    let (state_start, node_current) = if change.to.mapping.node.is_valid_node_id() {
+    let (state_start, mut node_current) = if change.to.mapping.node.is_valid_node_id() {
         (change.to.mapping.state.clone(), change.to.mapping.node)
     } else {
         // TODO(mjansson): Figure out a better way to store this metadata around file deletions
@@ -1127,6 +1134,14 @@ async fn find_last_merged_revision(
     // see if we arrive on source branch along any merge, and if that target revision
     // is later than the last modified revision we identified from the source branch file history
     let repository = change.to.mapping.repository.clone();
+    if node_current.is_valid_node_id()
+        && let Some(delta) = state_start
+            .node_delta(repository.clone(), node_current)
+            .await?
+        && added_without_merge(delta.action, delta.flags)
+    {
+        return Ok(None);
+    }
     let mut state_current = state_start.clone();
     while state_current.revision_number() > state_branch_point.revision_number()
         && node_current.is_valid_node_id()
@@ -1144,8 +1159,8 @@ async fn find_last_merged_revision(
                     "{} branch {} revision {} node {} history is a merge, {:?} check if other parent {} is from branch {}",
                     change.path().as_str(),
                     target_branch,
-                    node_current,
                     state_current.revision(),
+                    node_current,
                     node,
                     node.revision[1],
                     source_branch
@@ -1196,6 +1211,10 @@ async fn find_last_merged_revision(
                 );
             }
 
+            if added_without_merge(node.action[0], node.flags[0]) {
+                break;
+            }
+
             if let Ok(state_previous) =
                 state::State::deserialize(repository.clone(), node.revision[0]).await
             {
@@ -1215,6 +1234,7 @@ async fn find_last_merged_revision(
                         state_previous.revision()
                     );
                     state_current = state_previous;
+                    node_current = node.node[0];
                 }
             } else {
                 lore_warn!("Failed to deserialize state when walking source branch file history");
@@ -1229,6 +1249,13 @@ async fn find_last_merged_revision(
     }
 
     Ok(None)
+}
+
+/// Whether `action` and `flags` record a file added in its revision without a merge, which leaves
+/// no history of the file before that revision: a node reused for the file still holds the history
+/// of the file that had it before.
+fn added_without_merge(action: u16, flags: u16) -> bool {
+    action == FileAction::Add as u16 && flags & change::Flags::Merge.bits() == 0
 }
 
 pub struct TreeResult {
@@ -1639,12 +1666,14 @@ async fn resolve_revision_number(
             )
             .await
     {
-        if let Ok(item) = response
+        // A page the remote serves from a cached segment holds the number at any
+        // position, not first.
+        if let Some(item) = response
             .items
-            .as_slice()
-            .binary_search_by(|item| item.number.cmp(&revision_number))
+            .iter()
+            .find(|item| item.number == revision_number)
         {
-            revision = response.items[item].signature;
+            revision = item.signature;
             lore_debug!("response revision {}", revision);
         }
         find::cache_revision_list_states(repository.clone(), &response.items).await;
@@ -1690,7 +1719,7 @@ pub(crate) async fn resolve(
     signature: impl AsRef<str>,
     search_location: ResolveSearchLocation,
 ) -> Result<Hash, StateError> {
-    resolve_revision(repository, signature, search_location)
+    resolve_revision(repository, signature, None, search_location)
         .await
         .map(|(revision, _named_branch)| revision)
 }
@@ -1723,7 +1752,7 @@ pub async fn resolve_in_branch(
     search_location: ResolveSearchLocation,
 ) -> Result<ResolvedRevision, StateError> {
     let (revision, named_branch) =
-        resolve_revision(repository.clone(), signature, search_location).await?;
+        resolve_revision(repository.clone(), signature, None, search_location).await?;
 
     // Taken for the revision reached rather than the one named, since a `~<count>`
     // walk can cross the branch point into the branch this one was created from.
@@ -1734,11 +1763,14 @@ pub async fn resolve_in_branch(
 
 /// The revision a specifier names, and the branch it named to find it in.
 ///
-/// See [`resolve_in_branch`] for the specifier forms. The branch is reported as
-/// named rather than as the revision is taken on, which reads the revision.
-async fn resolve_revision(
+/// See [`resolve_in_branch`] for the specifier forms. A target given without a
+/// branch is taken on `implied_branch`, or on the branch the instance is on
+/// where that is `None`. The branch is reported as named rather than as the
+/// revision is taken on, which reads the revision.
+pub(crate) async fn resolve_revision(
     repository: Arc<RepositoryContext>,
     signature: impl AsRef<str>,
+    implied_branch: Option<BranchId>,
     search_location: ResolveSearchLocation,
 ) -> Result<(Hash, Option<(BranchId, Hash)>), StateError> {
     let original_input = signature.as_ref();
@@ -1778,15 +1810,19 @@ async fn resolve_revision(
         revision = parse_hash_signature(signature, original_input)?;
         lore_debug!("Resolved direct hash signature: {revision}");
     } else {
-        // An empty prefix is the branch the instance is on, which is what makes
-        // the `@` optional: no branch reads as a target, so a specifier carrying
-        // one and a specifier carrying none cannot be confused.
+        // An empty prefix names no branch, which is what makes the `@`
+        // optional: no branch reads as a target, so a specifier carrying one
+        // and a specifier carrying none cannot be confused.
         let (prefix, suffix) = signature.split_once("@").unwrap_or(("", signature));
         let target = branch_target(suffix, original_input)?;
 
         lore_debug!("Resolving branch {prefix} signature {signature}");
         let (branch, branch_metadata) = if prefix.is_empty() {
-            (current_anchor_branch(&repository).await?, Hash::default())
+            let branch = match implied_branch {
+                Some(branch) => branch,
+                None => current_anchor_branch(&repository).await?,
+            };
+            (branch, Hash::default())
         } else {
             let branch_status = branch::resolve(repository.clone(), prefix)
                 .await
